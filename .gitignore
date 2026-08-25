@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.venv/
+.coverage
+.claude/
+
+work/*
+!work/.gitkeep
+output/*
+!output/.gitkeep
+
+.env
