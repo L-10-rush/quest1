@@ -1,0 +1,356 @@
+Inital prompt structure-
+PROMPT - give me a well structure to add my prompt in prompt.txt to document what i have achieved in this project as i can easily maintained
+
+================================================================================
+PROMPT LOG — video-dialogue-finder
+================================================================================
+
+ENTRY TEMPLATE (copy this block for each new entry)
+--------------------------------------------------------------------------------
+[<STAGE>-<NN>] <DATE>
+MODEL    : <e.g. Claude / ChatGPT / Copilot / local model>
+PURPOSE  : <one line — what you were trying to get help with>
+PROMPT   : <the actual prompt, or a faithful paraphrase if it was long —
+            keep the substance, cut the filler>
+OUTCOME  : <what you kept as-is, what you changed, what you rejected and
+            why — this is the field that proves you understood the output>
+VERIFIED : <how you confirmed it actually works — "ran against real ok.ru
+            video, correct frame at 00:00:42" beats "looks right">
+--------------------------------------------------------------------------------
+
+================================================================================
+GEN — Planning & Reasearch
+================================================================================
+[GEN-01]
+MODEL    : Claude
+CONTEXT  : Problem Statemen file- Problem statement - My mind rebels at stagnation.pdf
+PROMPT   : i have only two day(24 - 26-aug 11:59pm) - the key thinks i have break the project
+            problem statement so that i can work with individual module make it workable and best for module and also integrate with next stage of the module where the data flow seamlessly so that the basic at least work now -
+1. getting the video( 
+	1.1 either downloading with meta data or 
+	1.2 getting the audio and have a time stamp mapping form the start time and end time and get the frame btw the time stamp or 
+	1.3 last option taking the snapshot of 10 frame in a second ).
+2. building the text extraction and pipeline and stored it into the file or any storage format which ever will be good and fast (suggest some idea for this module )
+3. finding the first and best match of the dialogue and frame give me suggestion if  this is a problem statement and wanted to have some some research if this type of tech or any open source software exist or not just do research no need to write any code also video can be youtube link also
+
+================================================================================
+GEN — Architecture & Planning
+================================================================================
+[GEN-01]
+MODEL    : Claude
+PROMPT   : i will be more clear as i have video url without subtitle it have voice we can use of that i wanted to have it more modular like easily change language if needed in future scope. So give me clear picture what will be the best approach with details documentation with tradeoff of other approach and best approach also give me break up the problem statement into steps or sprint to complete it before the deadline (26 Aug) so to achieve workable projects solution
+
+[GEN-02]
+MODEL    : Claude
+PROMPT   : Generate sprints breakdown of the Problem statement with detail structure explanation of the problem statement
+
+[GEN-03]
+MODEL    : Claude
+PROMPT   : Give me the file skeleton structure with function defination and it todos comments make sure this criteria - SOLID-structured folder layout + module interfaces
+OUTCOME  : Gave zip
+
+================================================================================
+S1 — Ingestion (video download + metadata)
+================================================================================
+[S1-01]
+MODEL    : Claude
+CONTEXT  : Sprint 1
+PROMPT   : In the given URL there's no caption or hardsubs, only audio dialogue
+  and conversation, so build audio-based for now. Add OCR plus audio
+  cross-confirmation as a documented future scope. Also keep a JSON file
+  per video URL, a separate folder for the frame images, and put word
+  counts/frequencies and other metrics in the JSON.
+
+[S1-02]
+MODEL    : Claude
+PURPOSE  : Sequenced video naming + registry for fast re-lookup on reruns
+PROMPT   :
+OUTCOME  :
+VERIFIED :
+
+================================================================================
+S2 — Audio extraction
+================================================================================
+[S2-01] <date>
+MODEL    :
+PURPOSE  :
+PROMPT   :
+OUTCOME  :
+VERIFIED :
+
+================================================================================
+S3 — Transcription (WhisperX word-level alignment)
+================================================================================
+[S3-01] <date>
+MODEL    :
+PURPOSE  : Wire up WhisperX, get first real transcript from the assignment audio
+PROMPT   :
+OUTCOME  : <note anything you had to correct after seeing the raw
+           transcript — e.g. model size chosen for CPU speed, language
+           param, batch size>
+VERIFIED : <sanity-checked the transcript by eye near the target phrase?>
+
+[S3-02] <date>
+MODEL    :
+PURPOSE  :
+PROMPT   :
+OUTCOME  :
+VERIFIED :
+
+================================================================================
+S4 — Fuzzy phrase matching
+================================================================================
+[S4-01] <date>
+MODEL    :
+PURPOSE  : Sliding-window fuzzy match over word-level transcript
+PROMPT   :
+OUTCOME  : <e.g. threshold/window-size tuned after seeing real ASR noise
+           on this video>
+VERIFIED : <does it find the correct span's start_time on the real video?>
+
+================================================================================
+S5 — Frame location (timestamp → exact frame)
+================================================================================
+[S5-01] <date>
+MODEL    :
+PURPOSE  :
+PROMPT   :
+OUTCOME  :
+VERIFIED : <does the saved frame image visually match the right moment?>
+
+================================================================================
+S6 — Output / storage
+================================================================================
+[S6-01]
+MODEL    :
+PURPOSE  :
+PROMPT   :
+OUTCOME  :
+VERIFIED :
+
+================================================================================
+INFRA — Docker, packaging, tooling
+================================================================================
+[INFRA-01]
+MODEL    : Claude
+PURPOSE  : Multi-stage Dockerfile with uv + ffmpeg
+PROMPT   : Fix my docker-caompose.ymal and Dockerfile
+
+================================================================================
+DEBUG — Fixes made after something broke
+================================================================================
+[DEBUG-01]
+MODEL    : Claude code
+PROMPT   : Fix the Runing issues  with this - uv run python -m src.main \
+  --url "https://ok.ru/video/248244667877" \
+  --text "My mind rebels at stagnation"
+
+
+
+PROMPT LOG — video-dialogue-finder
+===================================
+
+How this was actually built
+----------------------------
+I used Claude Code (Anthropic's CLI agent, running on the Sonnet model)
+for the whole build. That's different from chatting with Claude.ai or
+Gemini in a browser tab. Claude Code can read and write files in my repo,
+run shell commands, and actually run the test suite and the Docker build.
+So a lot of what's below happened as "here's the goal, go build it and
+show me it passes," not "write me a snippet I'll paste in myself."
+
+The assignment cares about whether I can actually direct and supervise an
+AI coding session, not just whether I typed some prompts. So I've logged
+the real sequence below, in order, including the spots where I course-
+corrected or interrupted mid-task, because that's what actually happened.
+The last section covers how to get a similar result using only the free
+web versions of Claude or Gemini, since those don't have file or shell
+access and need a different workflow.
+
+I did the initial research and wrote the first draft of Approch.md myself,
+before bringing in Claude Code. The prompts below start from there.
+
+----------------------------------------------------------------------
+
+[1] PURPOSE: kickoff, turn the research doc into a real project
+PROMPT:
+  "I have a problem statement and I've done some research and put it into
+  Approch.md. They also want three files: approach.md (architecture,
+  process diagram, sprint breakdown), prompt.txt (all prompts used,
+  ordered, with model/purpose/summary, they're going to evaluate me on
+  this), and README.md (full setup/startup guide with tech stack).
+  Focus on Dockerizing the project, and make it well structured with
+  solid, strong fundamentals. Clean code, properly commented."
+RESULT: Claude caught a real contradiction before writing anything. My
+  research doc assumed the dialogue was spoken (audio pipeline, WhisperX),
+  but the actual problem statement PDF says "on-screen dialogue," which
+  reads like burned-in captions instead. It asked me to confirm which one
+  was actually true for the assignment video before building around the
+  wrong assumption. Good catch. I hadn't reread the PDF closely enough.
+
+[2] PURPOSE: resolve the audio-vs-OCR question, scope the output format
+PROMPT:
+  "In the given URL there's no caption or hardsubs, only audio dialogue
+  and conversation, so build audio-based for now. Add OCR plus audio
+  cross-confirmation as a documented future scope. Also keep a JSON file
+  per video URL, a separate folder for the frame images, and put word
+  counts/frequencies and other metrics in the JSON."
+RESULT: This is the actual architecture decision that ended up in
+  approach.md: audio-first pipeline, OCR explicitly deferred. It also
+  shaped the output schema (per-video JSON, a frames/ folder, a
+  transcript_metrics block) from day one instead of being bolted on later.
+
+[3] PURPOSE: decide how much code Claude should write vs. scaffold
+PROMPT (picked from a clarifying multiple-choice Claude asked):
+  "Docker plus skeleton. Real Dockerfile/compose and a full module
+  skeleton with interfaces and docstrings, but leave the core algorithm
+  bodies for me to fill in."
+RESULT: Why the early scaffold had detailed TODO docstrings instead of
+  finished implementations. Architecture first, logic sprint by sprint.
+
+[4] PURPOSE: Dockerize for real, switch to uv
+PROMPT:
+  "I've dockerized this current project and I use uv to manage package
+  installation and running the project. Give me the README.md with all
+  the installation and setup guide. Only do this."
+RESULT: Docker plus docker-compose plus pyproject.toml/uv.lock got built
+  out. The README got a real Docker-path vs. native-uv-path setup guide.
+
+[5] PURPOSE: Sprint 1, ingestion, for real this time
+PROMPT:
+  "Help me implement Sprint 1. Write the code for the ingestion layer:
+  getting the video and its metadata. I also want the video to get a
+  sequenced generated name, and I want the data stored for future,
+  fastest searches. Plus its test code."
+RESULT: A SQLite-backed VideoRegistry (auto-incrementing sequence IDs for
+  filenames, indexed URL lookup so a repeat request skips re-downloading),
+  wired to the real yt-dlp downloader. Learned that SQLite auto-increment
+  is a much better fit here than a hand-rolled counter file. No race
+  conditions to worry about.
+
+[6] PURPOSE: make sure Sprint 1 actually holds up
+PROMPT:
+  "Continue with the last task. Write unit tests to test Sprint 1,
+  everything working."
+RESULT: Full coverage for the registry (cache hit/miss, self-healing when
+  a cached file gets deleted, cross-instance persistence) and the
+  downloader (mocked at the yt-dlp/OpenCV boundary so tests run in
+  milliseconds and need no network).
+
+[7] PURPOSE: Sprint 2, matching and frame extraction
+PROMPT:
+  "Complete Sprint 2 and generate the unit tests. Also update the README
+  test section with instructions on how to run those test files."
+RESULT: The RapidFuzz sliding-window matcher, and something I didn't
+  expect: my own test caught a real bug in the matching logic. A
+  truncated candidate window was scoring higher than the correct
+  full-width one, purely because of how token_sort_ratio handles string
+  length, not because it was actually a better match. Needed a
+  margin-based tie-break to fix it. Documented in approach.md because
+  it's exactly the kind of thing I should be able to explain live.
+
+[8] PURPOSE: Sprint 3, config, robustness, integration tests
+PROMPT:
+  "Help me complete Sprint 3, give me the test code, and update the docs."
+RESULT: The pipeline got tested end-to-end for the first time, not just
+  stage by stage. Fake stages standing in for the real ones proved an
+  uncertain match still produces a complete result instead of failing
+  silently, and that --language really flows through without touching
+  pipeline code.
+
+[9] PURPOSE: Sprint 4, the last two scaffolds, prove it actually works
+PROMPT:
+  "Go ahead with Sprint 4 and the remaining scaffolds. Update the unit
+  tests for Sprint 4. Also help me test the complete project together."
+RESULT: The most useful part of the whole build. Getting WhisperX to
+  actually import, not just pass mocked tests, surfaced a chain of real
+  dependency conflicts. torch, torchaudio, and torchvision each needed to
+  come from the same CPU wheel index. A pyannote-audio version was too
+  old for a newer torchaudio's API. A native library (ctranslate2)
+  wouldn't load at all on my kernel until its exec-stack flag got
+  patched. None of that shows up in a quick demo. It only shows up when
+  you run the thing for real. Once it was fixed, I generated a synthetic
+  speech clip and ran the full pipeline: correct transcript, correct
+  frame, 98% match score.
+
+[10] PURPOSE: a visual of how data actually moves through the pipeline
+PROMPT (mid-way through debugging the Docker build, I paused to ask this):
+  "Give me the schema and a process flow chart, how the data moves, in
+  approach.md for this project."
+RESULT: A Mermaid flowchart tracing the real six-stage pipeline call by
+  call, plus the actual dataclass fields for every object passed between
+  stages, taken straight from the code rather than a simplified version
+  written just for the doc.
+
+[11] PURPOSE: fix a real bug found by actually running it against a live URL
+PROMPT (pasted the actual error output from my own terminal):
+  "[pasted a yt-dlp 'Requested format is not available' error from
+  running the CLI against a real YouTube URL] Help me fix this error,
+  also fix the Dockerfile if needed."
+RESULT: The default format selector required a single progressive
+  video+audio stream, which most modern YouTube videos don't have
+  anymore. They serve separate video and audio tracks. Fixed it to merge
+  streams via ffmpeg instead. Then hit a second real bug testing the fix:
+  the video that got selected was AV1-encoded, and OpenCV's bundled
+  decoder couldn't seek it reliably. Added a preference for h264 over AV1
+  to the format selector, then confirmed the fix by running the full CLI
+  against the real video, not just rereading the code.
+
+[12] PURPOSE: extend the output to cover everything spoken, not just the match
+PROMPT:
+  "Now I want to work on the result JSON. Output all the dialogue that's
+  been spoken in the video."
+RESULT: Realized WhisperX already produces sentence-level segments during
+  alignment, and I'd been throwing them away, only keeping the flat word
+  list. Added a DialogueSegment type and surfaced it as a "transcript"
+  array in the output JSON: every line spoken in the video, in order,
+  independent of whatever phrase was being searched for.
+
+[13] PURPOSE: this file
+PROMPT:
+  "Write me a prompt.txt inside the project directory listing prompts I
+  could give to a free-plan Claude or Gemini account to get the same
+  result. Make it clean, well structured, and a little humanized, people
+  will judge me on this in the interview. Whatever reads as obviously
+  AI-generated, rewrite it so it doesn't."
+RESULT: This file. Worth writing down as a real prompting habit: the
+  giveaway signs are usually the same every time. Everything in perfect
+  parallel bullet points. Buzzwords like "leverage" and "robust solution"
+  doing no real work. An em dash in every other sentence. Zero
+  first-person voice. Every section the exact same length whether or not
+  it needs to be. I asked for plain, specific writing instead, and to
+  just say what happened rather than smoothing it into a pitch.
+
+----------------------------------------------------------------------
+
+Getting an equivalent result on Claude.ai (free) or Gemini (free)
+--------------------------------------------------------------------
+Claude Code can read my files, run my tests, and run real commands. The
+free web chat tools can't do any of that. They only give you text back.
+So the prompts above still work as a sequence, but the workflow around
+them changes:
+
+  1. Ask for one stage at a time, and ask for the full file content, not
+     a diff or a snippet. Free-tier chat has no memory of your actual
+     files, so it can only work from what you paste back to it.
+  2. After it gives you code, paste it into your own files and run the
+     tests yourself: pytest, docker build, whatever applies. The model
+     can't do this part for you.
+  3. When something breaks, paste the actual error message back instead
+     of describing it from memory. Prompt [11] above is a good example
+     of this working well ("here is the real traceback, fix it") versus
+     a vague "it doesn't work."
+  4. Keep each prompt scoped to one stage or module, the same way the
+     sprint breakdown above does it. A single "build the whole thing"
+     prompt on a free plan will blow past the context window and you'll
+     get a shallow, generic answer instead of something you can ship.
+  5. For the dependency-pinning issues in [9] specifically: a free-tier
+     model can reason about why torch, torchaudio, and torchvision need
+     to match, but it can't verify the fix by actually installing
+     anything. Expect to go back and forth pasting error messages a few
+     times. That's normal, not a sign you're doing it wrong.
+
+Everything else, the architecture decisions, the SOLID structure, the
+uncertainty-handling design, the bug fixes, came from the same kind of
+prompts either way. The real difference is whether the model gets to
+verify its own answer, or you're the one running it and reporting back.
