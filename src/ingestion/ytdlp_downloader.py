@@ -36,7 +36,21 @@ class YtDlpDownloader(VideoDownloader):
 
     def __init__(
         self,
-        format_selector: str = "best[ext=mp4]/best",
+        # Adapted from yt-dlp's own default (`bv*+ba/b`, used when no `-f`
+        # is given at all) with one addition: prefer an h264/avc1 video
+        # stream over AV1 when both exist. A stricter selector like
+        # `best[ext=mp4]/best` requiring a single progressive stream
+        # fails outright on most modern YouTube videos, which serve
+        # video and audio as separate DASH streams and often have no
+        # muxed "best" format at all -- see the `merge_output_format`
+        # note in `_run_ytdlp` for why merging separate streams is safe
+        # here. The avc1 preference exists because OpenCV's bundled
+        # ffmpeg build has an unreliable AV1 decoder/seeker (observed:
+        # garbage `CAP_PROP_POS_FRAMES` reads and "Missing Sequence
+        # Header" errors on an AV1-only download) -- h264 has by far the
+        # widest, most reliable decode+seek support across ffmpeg/OpenCV
+        # builds, and YouTube serves it for nearly every video.
+        format_selector: str = "bestvideo*[vcodec^=avc1]+bestaudio/bestvideo*+bestaudio/best",
         registry: VideoRegistry | None = None,
         registry_path: Path = DEFAULT_REGISTRY_PATH,
     ) -> None:
@@ -98,6 +112,14 @@ class YtDlpDownloader(VideoDownloader):
         opts = {
             "format": self._format_selector,
             "outtmpl": str(dest_dir / f"{filename_stem}.%(ext)s"),
+            # When the format selector picks separate video/audio streams,
+            # yt-dlp shells out to `ffmpeg` (already a hard dependency,
+            # see README) to mux them -- forcing the container to mp4
+            # keeps the downloaded file's extension predictable regardless
+            # of source codecs (a remux, e.g. VP9+Opus into mp4, is not
+            # strictly to-spec mp4 but both ffmpeg and OpenCV -- our only
+            # downstream readers -- handle it fine).
+            "merge_output_format": "mp4",
             "quiet": not logger.isEnabledFor(logging.DEBUG),
             "noplaylist": True,
         }
