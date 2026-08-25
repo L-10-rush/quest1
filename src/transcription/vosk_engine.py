@@ -15,7 +15,7 @@ import wave
 
 from src.audio.base import AudioAsset
 from src.exceptions import TranscriptionError
-from src.transcription.base import TranscriptionEngine, TranscriptResult, Word
+from src.transcription.base import DialogueSegment, TranscriptionEngine, TranscriptResult, Word
 
 logger = logging.getLogger(__name__)
 
@@ -34,12 +34,13 @@ class VoskEngine(TranscriptionEngine):
 
     def transcribe(self, audio: AudioAsset, language: str) -> TranscriptResult:
         try:
-            words = self._transcribe_wav(audio)
+            words, segments = self._transcribe_wav(audio)
         except Exception as exc:
             raise TranscriptionError(f"Vosk transcription failed: {exc}") from exc
 
         return TranscriptResult(
             words=tuple(words),
+            segments=tuple(segments),
             language=language,
             engine_name="vosk",
             model_name=self._model_path,
@@ -54,7 +55,7 @@ class VoskEngine(TranscriptionEngine):
             self._model = vosk.Model(model_path=self._model_path)
         return self._model
 
-    def _transcribe_wav(self, audio: AudioAsset) -> list[Word]:
+    def _transcribe_wav(self, audio: AudioAsset) -> tuple[list[Word], list[DialogueSegment]]:
         import vosk
 
         with wave.open(str(audio.file_path), "rb") as wav_file:
@@ -70,14 +71,35 @@ class VoskEngine(TranscriptionEngine):
             recognizer.SetWords(True)
 
             words: list[Word] = []
+            segments: list[DialogueSegment] = []
             while True:
                 chunk = wav_file.readframes(_CHUNK_FRAMES)
                 if not chunk:
                     break
                 if recognizer.AcceptWaveform(chunk):
-                    words.extend(self._words_from_result(recognizer.Result()))
-            words.extend(self._words_from_result(recognizer.FinalResult()))
-        return words
+                    self._consume_result(recognizer.Result(), words, segments)
+            self._consume_result(recognizer.FinalResult(), words, segments)
+        return words, segments
+
+    @classmethod
+    def _consume_result(
+        cls, result_json: str, words: list[Word], segments: list[DialogueSegment]
+    ) -> None:
+        """Vosk's `Result()`/`FinalResult()` each correspond to one of its
+        own endpoint-detected utterances -- exactly one `DialogueSegment`
+        per non-empty call, built from the same word entries appended to
+        `words`, no separate re-segmentation pass needed."""
+        chunk_words = cls._words_from_result(result_json)
+        words.extend(chunk_words)
+        if chunk_words:
+            segments.append(
+                DialogueSegment(
+                    text=" ".join(w.text for w in chunk_words),
+                    start_seconds=chunk_words[0].start_seconds,
+                    end_seconds=chunk_words[-1].end_seconds,
+                    confidence=sum(w.confidence for w in chunk_words) / len(chunk_words),
+                )
+            )
 
     @staticmethod
     def _words_from_result(result_json: str) -> list[Word]:

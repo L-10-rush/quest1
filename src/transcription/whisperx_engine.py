@@ -15,7 +15,7 @@ import whisperx
 
 from src.audio.base import AudioAsset
 from src.exceptions import TranscriptionError
-from src.transcription.base import TranscriptionEngine, TranscriptResult, Word
+from src.transcription.base import DialogueSegment, TranscriptionEngine, TranscriptResult, Word
 
 logger = logging.getLogger(__name__)
 
@@ -48,7 +48,7 @@ class WhisperXEngine(TranscriptionEngine):
             )
             detected_language = result.get("language", language)
 
-            words = self._align(result["segments"], audio_array, detected_language)
+            words, segments = self._align(result["segments"], audio_array, detected_language)
         except Exception as exc:
             # WhisperX/faster-whisper/torch each raise their own exception
             # types depending on the failure -- normalized to
@@ -57,6 +57,7 @@ class WhisperXEngine(TranscriptionEngine):
 
         return TranscriptResult(
             words=tuple(words),
+            segments=tuple(segments),
             language=detected_language,
             engine_name="whisperx",
             model_name=self._model_size,
@@ -79,12 +80,18 @@ class WhisperXEngine(TranscriptionEngine):
             )
         return self._model
 
-    def _align(self, segments: list[dict], audio_array, language: str) -> list[Word]:
+    def _align(
+        self, segments: list[dict], audio_array, language: str
+    ) -> tuple[list[Word], list[DialogueSegment]]:
         """Word-align `segments` against the audio, or fall back to
         interpolated per-word timestamps if no aligner exists for
-        `language` (documented graceful degradation, see approach.md §7)."""
+        `language` (documented graceful degradation, see approach.md §8).
+        Returns both the flat word list the matcher searches AND the
+        coarser per-utterance `DialogueSegment` list -- "every line
+        spoken in the video" -- persisted separately (see
+        output/json_store.py)."""
         if not segments:
-            return []
+            return [], []
 
         try:
             align_model, align_metadata = self._get_align_model(language)
@@ -94,12 +101,14 @@ class WhisperXEngine(TranscriptionEngine):
                 "falling back to interpolated (less precise) word timestamps",
                 language,
             )
-            return self._interpolate_words(segments)
+            return self._interpolate_words(segments), self._segments_from_raw(segments)
 
         aligned = whisperx.align(
             segments, align_model, align_metadata, audio_array, self._device
         )
-        return self._words_from_aligned_segments(aligned["word_segments"])
+        words = self._words_from_aligned_segments(aligned["word_segments"])
+        dialogue_segments = self._segments_from_aligned(aligned["segments"])
+        return words, dialogue_segments
 
     def _get_align_model(self, language: str):
         if language not in self._align_models:
@@ -126,6 +135,42 @@ class WhisperXEngine(TranscriptionEngine):
         return words
 
     @staticmethod
+    def _segments_from_aligned(aligned_segments: list[dict]) -> list[DialogueSegment]:
+        """One `DialogueSegment` per WhisperX segment (its own utterance
+        boundary, from Whisper's decoding) -- confidence is the average of
+        that segment's own aligned word scores, not recomputed globally."""
+        result: list[DialogueSegment] = []
+        for seg in aligned_segments:
+            text = seg.get("text", "").strip()
+            if not text:
+                continue
+            word_scores = [w["score"] for w in seg.get("words", []) if "score" in w]
+            confidence = sum(word_scores) / len(word_scores) if word_scores else 0.0
+            result.append(
+                DialogueSegment(
+                    text=text,
+                    start_seconds=seg["start"],
+                    end_seconds=seg["end"],
+                    confidence=confidence,
+                )
+            )
+        return result
+
+    @staticmethod
+    def _segments_from_raw(segments: list[dict]) -> list[DialogueSegment]:
+        """Same idea as `_segments_from_aligned`, but for the pre-alignment
+        ASR segments used in the interpolated-timestamp fallback path --
+        confidence matches `_interpolate_words`'s placeholder (0.5), since
+        neither has a real per-word/segment alignment score to report."""
+        return [
+            DialogueSegment(
+                text=seg["text"].strip(), start_seconds=seg["start"], end_seconds=seg["end"], confidence=0.5
+            )
+            for seg in segments
+            if seg.get("text", "").strip()
+        ]
+
+    @staticmethod
     def _interpolate_words(segments: list[dict]) -> list[Word]:
         """Split each segment's text evenly across its [start, end] span,
         proportional to word length. Materially less precise than forced
@@ -148,7 +193,7 @@ class WhisperXEngine(TranscriptionEngine):
                         start_seconds=cursor,
                         end_seconds=cursor + duration,
                         # Lower than a real alignment score -- signals to
-                        # the matcher's low-confidence check (approach.md §6)
+                        # the matcher's low-confidence check (approach.md §7)
                         # that these timestamps are interpolated, not measured.
                         confidence=0.5,
                     )

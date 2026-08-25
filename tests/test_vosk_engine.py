@@ -2,8 +2,8 @@
 
 The `vosk` library itself (model loading, the Kaldi recognizer) is mocked
 out -- these tests verify OUR code: chunked WAV reading, JSON-result to
-`Word` mapping, model caching, mono/16-bit format validation, and error
-wrapping. No real Vosk model download needed.
+`Word` mapping, model caching, mono/16-bit format validation, DialogueSegment
+building, and error wrapping. No real Vosk model download needed.
 """
 
 import json
@@ -98,6 +98,10 @@ class TestTranscribe:
         assert len(result.words) == 2
         assert result.words[0].text == "my"
         assert result.words[1].confidence == 0.95
+        # FakeRecognizer completes one word per AcceptWaveform() call here,
+        # so each word lands in its own segment -- see TestConsumeResult
+        # below for the multi-word-per-segment case.
+        assert len(result.segments) == 2
 
     def test_model_loaded_once_and_reused_across_calls(self, tmp_path, fake_vosk_module):
         wav_path = tmp_path / "audio.wav"
@@ -135,3 +139,38 @@ class TestTranscribe:
         result = VoskEngine(model_path="models/vosk").transcribe(audio, language="en")
 
         assert result.words == ()
+        assert result.segments == ()
+
+
+class TestConsumeResult:
+    """Unit tests of VoskEngine._consume_result directly -- FakeRecognizer
+    above only ever completes one word per call, so this is the precise
+    way to test multiple words landing in a single dialogue segment."""
+
+    def test_multiple_words_become_one_segment(self):
+        words, segments = [], []
+        result_json = json.dumps(
+            {
+                "result": [
+                    {"word": "my", "start": 0.0, "end": 0.2, "conf": 0.9},
+                    {"word": "mind", "start": 0.2, "end": 0.5, "conf": 0.95},
+                ]
+            }
+        )
+
+        VoskEngine._consume_result(result_json, words, segments)
+
+        assert len(words) == 2
+        assert len(segments) == 1
+        assert segments[0].text == "my mind"
+        assert segments[0].start_seconds == 0.0
+        assert segments[0].end_seconds == 0.5
+        assert segments[0].confidence == pytest.approx((0.9 + 0.95) / 2)
+
+    def test_empty_result_adds_no_segment(self):
+        words, segments = [], []
+
+        VoskEngine._consume_result(json.dumps({"result": []}), words, segments)
+
+        assert words == []
+        assert segments == []

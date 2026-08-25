@@ -4,8 +4,8 @@ WhisperX itself (model loading, VAD, forced alignment) is mocked out at
 the module boundary -- these tests verify OUR code: lazy model/aligner
 caching, mapping WhisperX's word-segment dicts to `Word`, skipping words
 with no aligned timestamp, the interpolated-timestamp fallback when no
-aligner exists for a language, and error wrapping. No network, no model
-download, no audio file needed.
+aligner exists for a language, DialogueSegment building, and error
+wrapping. No network, no model download, no audio file needed.
 """
 
 from pathlib import Path
@@ -58,8 +58,21 @@ class TestTranscribe:
             {"word": "My", "start": 0.0, "end": 0.2, "score": 0.9},
             {"word": "mind", "start": 0.2, "end": 0.5, "score": 0.95},
         ]
+        aligned_segments = [
+            {
+                "start": 0.0,
+                "end": 0.5,
+                "text": "My mind",
+                "words": [{"score": 0.9}, {"score": 0.95}],
+            }
+        ]
         monkeypatch.setattr(
-            whisperx_engine_module.whisperx, "align", lambda segs, m, meta, audio, device: {"word_segments": word_segments}
+            whisperx_engine_module.whisperx,
+            "align",
+            lambda segs, m, meta, audio, device: {
+                "word_segments": word_segments,
+                "segments": aligned_segments,
+            },
         )
 
         result = WhisperXEngine(model_size="tiny", device="cpu").transcribe(AUDIO, language="en")
@@ -71,6 +84,9 @@ class TestTranscribe:
         assert result.words[0].text == "My"
         assert result.words[0].start_seconds == 0.0
         assert result.words[1].confidence == 0.95
+        assert len(result.segments) == 1
+        assert result.segments[0].text == "My mind"
+        assert result.segments[0].confidence == pytest.approx((0.9 + 0.95) / 2)
 
     def test_model_is_loaded_once_and_reused_across_calls(self, monkeypatch, stub_whisperx):
         load_model_calls = []
@@ -81,7 +97,9 @@ class TestTranscribe:
 
         monkeypatch.setattr(whisperx_engine_module.whisperx, "load_model", fake_load_model)
         monkeypatch.setattr(whisperx_engine_module.whisperx, "load_align_model", lambda **k: ("m", "meta"))
-        monkeypatch.setattr(whisperx_engine_module.whisperx, "align", lambda *a, **k: {"word_segments": []})
+        monkeypatch.setattr(
+            whisperx_engine_module.whisperx, "align", lambda *a, **k: {"word_segments": [], "segments": []}
+        )
 
         engine = WhisperXEngine(model_size="tiny", device="cpu")
         engine.transcribe(AUDIO, language="en")
@@ -99,7 +117,9 @@ class TestTranscribe:
 
         monkeypatch.setattr(whisperx_engine_module.whisperx, "load_model", fake_load_model)
         monkeypatch.setattr(whisperx_engine_module.whisperx, "load_align_model", lambda **k: ("m", "meta"))
-        monkeypatch.setattr(whisperx_engine_module.whisperx, "align", lambda *a, **k: {"word_segments": []})
+        monkeypatch.setattr(
+            whisperx_engine_module.whisperx, "align", lambda *a, **k: {"word_segments": [], "segments": []}
+        )
 
         WhisperXEngine(device="cpu").transcribe(AUDIO, language="en")
         WhisperXEngine(device="cuda").transcribe(AUDIO, language="en")
@@ -116,7 +136,9 @@ class TestTranscribe:
             return (f"model-{language_code}", f"meta-{language_code}")
 
         monkeypatch.setattr(whisperx_engine_module.whisperx, "load_align_model", fake_load_align_model)
-        monkeypatch.setattr(whisperx_engine_module.whisperx, "align", lambda *a, **k: {"word_segments": []})
+        monkeypatch.setattr(
+            whisperx_engine_module.whisperx, "align", lambda *a, **k: {"word_segments": [], "segments": []}
+        )
 
         engine = WhisperXEngine()
         engine.transcribe(AUDIO, language="en")
@@ -133,7 +155,11 @@ class TestTranscribe:
             {"word": "um"},  # alignment couldn't place this one -- no start/end
             {"word": "hello", "start": 0.3, "end": 0.8, "score": 0.9},
         ]
-        monkeypatch.setattr(whisperx_engine_module.whisperx, "align", lambda *a, **k: {"word_segments": word_segments})
+        monkeypatch.setattr(
+            whisperx_engine_module.whisperx,
+            "align",
+            lambda *a, **k: {"word_segments": word_segments, "segments": []},
+        )
 
         result = WhisperXEngine().transcribe(AUDIO, language="en")
 
@@ -159,6 +185,10 @@ class TestTranscribe:
         # words should span the segment in order without gaps
         assert result.words[0].start_seconds == 0.0
         assert result.words[1].end_seconds == pytest.approx(2.0)
+        # the raw (pre-alignment) segment is still surfaced as a DialogueSegment
+        assert len(result.segments) == 1
+        assert result.segments[0].text == "hello world"
+        assert result.segments[0].confidence == 0.5
 
     def test_empty_segments_produce_empty_transcript_without_calling_align(
         self, monkeypatch, stub_whisperx
@@ -170,6 +200,7 @@ class TestTranscribe:
         result = WhisperXEngine().transcribe(AUDIO, language="en")
 
         assert result.words == ()
+        assert result.segments == ()
         assert align_called == []
 
     def test_model_failure_wrapped_in_transcription_error(self, monkeypatch, stub_whisperx):
@@ -181,3 +212,57 @@ class TestTranscribe:
 
         with pytest.raises(TranscriptionError, match="model exploded"):
             WhisperXEngine().transcribe(AUDIO, language="en")
+
+
+class TestDialogueSegments:
+    def test_multiple_segments_preserved_in_order(self, monkeypatch, stub_whisperx):
+        segments = [
+            {"start": 0.0, "end": 1.0, "text": "Hello there."},
+            {"start": 2.0, "end": 3.0, "text": "General Kenobi."},
+        ]
+        monkeypatch.setattr(whisperx_engine_module.whisperx, "load_model", lambda *a, **k: FakeModel(segments))
+        monkeypatch.setattr(whisperx_engine_module.whisperx, "load_align_model", lambda **k: ("m", "meta"))
+        aligned_segments = [
+            {"start": 0.0, "end": 1.0, "text": "Hello there.", "words": [{"score": 0.9}]},
+            {"start": 2.0, "end": 3.0, "text": "General Kenobi.", "words": [{"score": 0.8}]},
+        ]
+        monkeypatch.setattr(
+            whisperx_engine_module.whisperx,
+            "align",
+            lambda *a, **k: {"word_segments": [], "segments": aligned_segments},
+        )
+
+        result = WhisperXEngine().transcribe(AUDIO, language="en")
+
+        assert [s.text for s in result.segments] == ["Hello there.", "General Kenobi."]
+        assert result.segments[1].start_seconds == 2.0
+
+    def test_blank_text_segments_are_skipped(self, monkeypatch, stub_whisperx):
+        segments = [{"start": 0.0, "end": 1.0, "text": "hi"}]
+        monkeypatch.setattr(whisperx_engine_module.whisperx, "load_model", lambda *a, **k: FakeModel(segments))
+        monkeypatch.setattr(whisperx_engine_module.whisperx, "load_align_model", lambda **k: ("m", "meta"))
+        aligned_segments = [{"start": 0.0, "end": 0.1, "text": "   ", "words": []}]
+        monkeypatch.setattr(
+            whisperx_engine_module.whisperx,
+            "align",
+            lambda *a, **k: {"word_segments": [], "segments": aligned_segments},
+        )
+
+        result = WhisperXEngine().transcribe(AUDIO, language="en")
+
+        assert result.segments == ()
+
+    def test_segment_with_no_scored_words_gets_zero_confidence(self, monkeypatch, stub_whisperx):
+        segments = [{"start": 0.0, "end": 1.0, "text": "hi"}]
+        monkeypatch.setattr(whisperx_engine_module.whisperx, "load_model", lambda *a, **k: FakeModel(segments))
+        monkeypatch.setattr(whisperx_engine_module.whisperx, "load_align_model", lambda **k: ("m", "meta"))
+        aligned_segments = [{"start": 0.0, "end": 1.0, "text": "hi", "words": []}]
+        monkeypatch.setattr(
+            whisperx_engine_module.whisperx,
+            "align",
+            lambda *a, **k: {"word_segments": [], "segments": aligned_segments},
+        )
+
+        result = WhisperXEngine().transcribe(AUDIO, language="en")
+
+        assert result.segments[0].confidence == 0.0
