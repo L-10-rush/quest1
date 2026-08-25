@@ -1,10 +1,11 @@
-"""yt-dlp-backed VideoDownloader.
+"""yt-dlp-backed VideoDownloader, cached and sequence-named via VideoRegistry.
 
-STATUS: scaffold only -- `download()` is intentionally left unimplemented.
-Wiring, typing, and error contract are done; the actual yt-dlp invocation
-and metadata probing require a live network call against the real
-assignment URL to validate, so that judgment call is left for you rather
-than guessed at here. See the TODO in `download()` for the exact steps.
+Works for any site yt-dlp supports (YouTube, ok.ru, ...) without
+per-platform branching -- yt-dlp itself handles extraction. Every download
+is registered in a `VideoRegistry` (SQLite) so a repeat request for the
+same URL returns the cached `VideoMetadata` directly, and every downloaded
+file is named with a database-assigned sequence number rather than a
+raw/possibly-unsafe platform ID.
 """
 
 from __future__ import annotations
@@ -12,60 +13,113 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
+import cv2
+import yt_dlp
+
 from src.exceptions import DownloadError
 from src.ingestion.base import VideoDownloader, VideoMetadata
+from src.ingestion.registry import VideoRegistry
 from src.utils.video_id import extract_video_id
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_REGISTRY_PATH = Path("output/registry.db")
+
 
 class YtDlpDownloader(VideoDownloader):
-    """Downloads video via the `yt-dlp` library and probes it with OpenCV.
+    """Downloads video via `yt-dlp` and probes the result with OpenCV.
 
-    Works for any site yt-dlp supports (YouTube, ok.ru, ...) without
-    per-platform branching -- yt-dlp itself handles extraction.
+    The registry is lazily constructed on first use (not in `__init__`)
+    so simply instantiating this class -- e.g. in a test that exercises
+    something else -- never touches disk.
     """
 
-    def __init__(self, format_selector: str = "best[ext=mp4]/best") -> None:
+    def __init__(
+        self,
+        format_selector: str = "best[ext=mp4]/best",
+        registry: VideoRegistry | None = None,
+        registry_path: Path = DEFAULT_REGISTRY_PATH,
+    ) -> None:
         self._format_selector = format_selector
+        self._registry = registry
+        self._registry_path = registry_path
+
+    def _get_registry(self) -> VideoRegistry:
+        if self._registry is None:
+            self._registry = VideoRegistry(self._registry_path)
+        return self._registry
 
     def download(self, url: str, dest_dir: Path) -> VideoMetadata:
-        """Download `url` into `dest_dir`, return its `VideoMetadata`.
+        registry = self._get_registry()
 
-        TODO (not implemented -- fill this in and validate against the real
-        assignment URL, https://ok.ru/video/248244667877):
+        cached = registry.find_by_url(url)
+        if cached is not None:
+            logger.info(
+                "cache hit for %s -> %s (sequence #%06d)",
+                url,
+                cached.file_path,
+                cached.sequence_id,
+            )
+            return cached
 
-        1. `dest_dir.mkdir(parents=True, exist_ok=True)`
-        2. video_id = extract_video_id(url)  (already available, see import)
-        3. Run yt-dlp, e.g.:
-               import yt_dlp
-               opts = {
-                   "format": self._format_selector,
-                   "outtmpl": str(dest_dir / f"{video_id}.%(ext)s"),
-                   "quiet": not logger.isEnabledFor(logging.DEBUG),
-               }
-               with yt_dlp.YoutubeDL(opts) as ydl:
-                   info = ydl.extract_info(url, download=True)
-                   file_path = Path(ydl.prepare_filename(info))
-        4. Probe the *downloaded file* for ground-truth fps/duration/size
-           with OpenCV (don't trust yt-dlp's reported metadata -- it can be
-           wrong for the actual re-encoded/muxed output):
-               import cv2
-               cap = cv2.VideoCapture(str(file_path))
-               fps = cap.get(cv2.CAP_PROP_FPS)
-               frame_count = cap.get(cv2.CAP_PROP_FRAME_COUNT)
-               duration = frame_count / fps if fps else 0.0
-               width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-               height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-               cap.release()
-        5. Wrap steps 3-4 in try/except and raise
-           `DownloadError(str(exc)) from exc` on any failure -- never let a
-           yt_dlp.utils.DownloadError or cv2 error escape this method.
-        6. Return `VideoMetadata(video_id=video_id, source_url=url,
-           file_path=file_path, title=info.get("title", video_id),
-           duration_seconds=duration, fps=fps, width=width, height=height)`
-        """
-        raise NotImplementedError(
-            "YtDlpDownloader.download() is a scaffold -- implement steps 1-6 "
-            "in the docstring above and validate against a real video URL."
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        video_id = extract_video_id(url)
+        sequence_id = registry.reserve(url, video_id)
+        filename_stem = registry.filename_stem(sequence_id, video_id)
+
+        try:
+            file_path, title = self._run_ytdlp(url, dest_dir, filename_stem)
+            fps, duration, width, height = self._probe(file_path)
+        except Exception as exc:
+            # yt-dlp raises many distinct exception types depending on the
+            # failure (network, extractor, unsupported URL, ...) and OpenCV
+            # raises its own on a corrupt/empty output file -- deliberately
+            # broad here so every one of them is normalized to DownloadError
+            # (see the contract in ingestion/base.py: callers only ever
+            # need to handle one exception type).
+            raise DownloadError(f"failed to download {url}: {exc}") from exc
+
+        metadata = VideoMetadata(
+            video_id=video_id,
+            source_url=url,
+            file_path=file_path,
+            title=title,
+            duration_seconds=duration,
+            fps=fps,
+            width=width,
+            height=height,
+            sequence_id=sequence_id,
         )
+        registry.finalize(url, metadata)
+        logger.info("downloaded %s -> %s (sequence #%06d)", url, file_path, sequence_id)
+        return metadata
+
+    def _run_ytdlp(self, url: str, dest_dir: Path, filename_stem: str) -> tuple[Path, str]:
+        opts = {
+            "format": self._format_selector,
+            "outtmpl": str(dest_dir / f"{filename_stem}.%(ext)s"),
+            "quiet": not logger.isEnabledFor(logging.DEBUG),
+            "noplaylist": True,
+        }
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            file_path = Path(ydl.prepare_filename(info))
+            title = info.get("title") or filename_stem
+        return file_path, title
+
+    def _probe(self, file_path: Path) -> tuple[float, float, int, int]:
+        """Probe the *downloaded file* for ground-truth fps/duration/size
+        rather than trusting yt-dlp's reported metadata, which can differ
+        from the actual re-encoded/muxed output."""
+        cap = cv2.VideoCapture(str(file_path))
+        if not cap.isOpened():
+            raise OSError(f"downloaded file could not be opened by OpenCV: {file_path}")
+        try:
+            fps = cap.get(cv2.CAP_PROP_FPS)
+            frame_count = cap.get(cv2.CAP_PROP_FRAME_COUNT)
+            duration = frame_count / fps if fps else 0.0
+            width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        finally:
+            cap.release()
+        return fps, duration, width, height

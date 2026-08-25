@@ -10,15 +10,12 @@ assertions (see the other test_*.py files for the pattern) -- a stage
 import pytest
 
 from src.audio.ffmpeg_extractor import FfmpegAudioExtractor
-from src.ingestion.ytdlp_downloader import YtDlpDownloader
 from src.matching.fuzzy_matcher import FuzzyMatcher
 from src.transcription.vosk_engine import VoskEngine
 from src.transcription.whisperx_engine import WhisperXEngine
 
-
-def test_ytdlp_downloader_not_yet_implemented():
-    with pytest.raises(NotImplementedError):
-        YtDlpDownloader().download("https://ok.ru/video/248244667877", dest_dir=None)
+# YtDlpDownloader (Sprint 1, ingestion) has graduated -- see
+# tests/test_ytdlp_downloader.py and tests/test_registry.py.
 
 
 def test_ffmpeg_extractor_not_yet_implemented():
