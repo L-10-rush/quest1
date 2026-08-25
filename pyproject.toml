@@ -1,0 +1,83 @@
+[project]
+name = "video-dialogue-finder"
+version = "0.1.0"
+description = "Locate the exact video frame where a spoken line of dialogue occurs."
+requires-python = ">=3.11,<3.13"
+dependencies = [
+    "yt-dlp>=2024.8.6",
+    "torch>=2.2.0",
+    "torchaudio>=2.2.0",
+    # Not used directly -- pulled in transitively by transformers (via its
+    # image-processing base classes, imported unconditionally as part of
+    # loading `Pipeline`, which whisperx's ASR module needs). Declared and
+    # pinned explicitly for the same reason as torchaudio below: a
+    # torchvision build resolved from the default (CUDA) index is ABI-
+    # incompatible with our CPU-only torch and fails with
+    # `RuntimeError: operator torchvision::nms does not exist`.
+    "torchvision>=0.17.0",
+    # >=3.8.4, not whisperx's own floor (3.1.1): older whisperx releases
+    # pin pyannote-audio<4.0, which still calls `torchaudio.AudioMetaData`
+    # -- an API a modern torchaudio no longer has (removed in favor of the
+    # ffmpeg-based StreamReader/info()), so it import-crashes before any of
+    # our code runs. This is a real runtime incompatibility uv's resolver
+    # can't see on its own (version specifiers don't encode "this
+    # attribute got deleted"), so the fix is pinned explicitly. 3.8.2/3.8.3
+    # were yanked upstream (broken word timestamps / faster-whisper
+    # incompatibility) -- >=3.8.4 is the first release using
+    # pyannote-audio>=4.0.
+    "whisperx>=3.8.4",
+    "pyannote-audio>=4.0",
+    "rapidfuzz>=3.9.0",
+    "opencv-python-headless>=4.9.0",
+    "vosk>=0.3.45",
+    # >=2.1.0: required by whisperx>=3.8.4 (see above); opencv-python-headless
+    # and the rest of the stack have supported numpy 2.x for a while.
+    "numpy>=2.1.0",
+    "python-dotenv>=1.0.1",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+    "ruff>=0.6.0",
+]
+
+# This is a standalone application (run via `python -m src.main`), not a
+# library meant to be imported by other packages -- tell uv not to try to
+# build/install it as one, so no build-system/hatchling section is needed.
+[tool.uv]
+package = false
+
+# torch's default PyPI wheels pull in full CUDA runtime libs (multiple GB).
+# The project defaults to CPU inference (--device cpu), so pin torch to the
+# official CPU-only wheel index -- this alone keeps the Docker image and
+# `uv sync` several GB smaller. GPU users can override with `--device cuda`
+# after installing a CUDA-enabled torch build separately (see README).
+#
+# torchaudio and torchvision MUST be pinned alongside torch: each ships a
+# compiled extension linked against a specific torch build, and a wheel
+# resolved from the default (CUDA) index is ABI-incompatible with a
+# CPU-only torch -- torchaudio fails to import at all
+# (`OSError: libcudart.so.13: cannot open shared object file`), torchvision
+# imports but its ops crash at call time
+# (`RuntimeError: operator torchvision::nms does not exist`). Both are
+# exercised transitively by WhisperX (torchaudio directly, torchvision via
+# transformers), so this isn't optional even though neither is used
+# directly by this project's own code.
+[tool.uv.sources]
+torch = [{ index = "pytorch-cpu" }]
+torchaudio = [{ index = "pytorch-cpu" }]
+torchvision = [{ index = "pytorch-cpu" }]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
