@@ -24,9 +24,11 @@ from src.logging_config import configure_logging
 from src.matching.fuzzy_matcher import FuzzyMatcher
 from src.output.json_store import JsonResultStore
 from src.pipeline import DialoguePipeline, PipelineRunSummary, PreparedSession
+from src.screen_presence.opencv_detector import OpenCvScreenPresenceDetector
 from src.transcription.base import TranscriptionEngine
 from src.transcription.vosk_engine import VoskEngine
 from src.transcription.whisperx_engine import WhisperXEngine
+from src.utils.terminal_image import render_image_ansi
 
 logger = logging.getLogger(__name__)
 
@@ -48,27 +50,47 @@ def build_pipeline(config: PipelineConfig) -> DialoguePipeline:
         transcriber=_build_transcriber(config),
         matcher=FuzzyMatcher(),
         frame_locator=OpenCvFrameLocator(),
+        screen_presence_detector=OpenCvScreenPresenceDetector(),
         result_store=JsonResultStore(config.output_dir),
         config=config,
     )
 
 
-def _print_summary(summary: PipelineRunSummary) -> None:
+def _print_summary(summary: PipelineRunSummary, *, show_images: bool, image_width: int) -> None:
     print(f"Timestamp : {summary.timestamp}")
     print(f"Frame     : {summary.frame_number}")
     print(f"Text      : \"{summary.matched_text}\"")
     print(f"Score     : {summary.match_score:.1f}")
     if summary.is_uncertain:
         print(f"Warning   : result flagged UNCERTAIN -- {summary.uncertainty_reason}")
+    if summary.screen_status is not None:
+        print(
+            f"OnScreen  : {summary.screen_status.upper()} "
+            f"(confidence {summary.screen_confidence:.2f}) -- {summary.screen_reason}"
+        )
     print(f"Image     : {summary.frame_image_path}")
     print(f"JSON      : {summary.result_json_path}")
     print(f"Elapsed   : {summary.total_seconds:.1f}s")
+
+    if show_images and summary.best_frame_image is not None:
+        print()
+        print(render_image_ansi(summary.best_frame_image, max_width=image_width))
+
+    if show_images and summary.candidate_previews:
+        print()
+        print(f"Other candidates ({len(summary.candidate_previews)}, for ambiguity review):")
+        for text, score, image in summary.candidate_previews:
+            print(f'  score={score:.1f}  "{text}"')
+            print(render_image_ansi(image, max_width=image_width))
+            print()
 
 
 _EXIT_WORDS = {"exit", "quit", "q"}
 
 
-def _run_interactive_session(pipeline: DialoguePipeline, session: PreparedSession) -> None:
+def _run_interactive_session(
+    pipeline: DialoguePipeline, session: PreparedSession, *, show_images: bool, image_width: int
+) -> None:
     """Prompts for one dialogue line at a time and searches the already
     -prepared session for each, looping until the user exits.
 
@@ -98,7 +120,7 @@ def _run_interactive_session(pipeline: DialoguePipeline, session: PreparedSessio
             continue
 
         print()
-        _print_summary(summary)
+        _print_summary(summary, show_images=show_images, image_width=image_width)
         print()
 
 
@@ -118,13 +140,20 @@ def main(argv: list[str] | None = None) -> int:
         logger.error("not yet implemented: %s", exc)
         return 2
 
+    # Rendering ANSI escape codes into a redirected/piped output (a log
+    # file, `| cat`, a non-interactive CI run) would just dump garbage --
+    # `--no-images` is a user opt-out, isatty() is the environment's own.
+    show_images = config.show_images and sys.stdout.isatty()
+
     try:
         if config.target_text:
             # Previous single-shot behavior: one search, then exit.
             summary = pipeline.locate_dialogue(session, config.target_text)
-            _print_summary(summary)
+            _print_summary(summary, show_images=show_images, image_width=config.image_width)
         else:
-            _run_interactive_session(pipeline, session)
+            _run_interactive_session(
+                pipeline, session, show_images=show_images, image_width=config.image_width
+            )
     except PipelineError as exc:
         logger.error("pipeline failed: %s", exc)
         return 1

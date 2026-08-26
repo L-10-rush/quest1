@@ -1,13 +1,14 @@
 Inital prompt structure-
-[1] PROMPT - give me a well structure to add my prompt in prompt.txt to document what i have achieved in this project as i can easily maintained
+[1] PROMPT - give me a well structure to add my prompt in prompt.txt to document 
+             what i have achieved in this project as i can easily maintained
 
-================================================================================
+--------------------------------------------------------------------------------
 PROMPT LOG — video-dialogue-finder
-================================================================================
+--------------------------------------------------------------------------------
 
-================================================================================
+--------------------------------------------------------------------------------
 GEN — Planning & Reasearch
-================================================================================
+--------------------------------------------------------------------------------
 [GEN-01]
 MODEL    : Claude
 CONTEXT  : Problem Statemen file- Problem statement - My mind rebels at stagnation.pdf
@@ -20,9 +21,9 @@ PROMPT   : i have only two day(24 - 26-aug 11:59pm) - the key thinks i have brea
 2. building the text extraction and pipeline and stored it into the file or any storage format which ever will be good and fast (suggest some idea for this module )
 3. finding the first and best match of the dialogue and frame give me suggestion if  this is a problem statement and wanted to have some some research if this type of tech or any open source software exist or not just do research no need to write any code also video can be youtube link also
 
-================================================================================
+--------------------------------------------------------------------------------
 GEN — Architecture & Planning
-================================================================================
+--------------------------------------------------------------------------------
 [GEN-01]
 MODEL    : Claude
 PROMPT   : i will be more clear as i have video url without subtitle it have voice we can use of that i wanted to have it more modular like easily change language if needed in future scope. So give me clear picture what will be the best approach with details documentation with tradeoff of other approach and best approach also give me break up the problem statement into steps or sprint to complete it before the deadline (26 Aug) so to achieve workable projects solution
@@ -36,9 +37,9 @@ MODEL    : Claude
 PROMPT   : Give me the file skeleton structure with function defination and it todos comments make sure this criteria - SOLID-structured folder layout + module interfaces
 OUTCOME  : Gave zip
 
-================================================================================
+--------------------------------------------------------------------------------
 S1 — Ingestion (video download + metadata)
-================================================================================
+--------------------------------------------------------------------------------
 [S1-01]
 MODEL    : Claude
 CONTEXT  : Sprint 1
@@ -54,24 +55,19 @@ PROMPT   : For the ingestion layer I also want each downloaded video saved
            under a generated sequence name, and I want reruns against the
            same URL to skip the download entirely instead of fetching it
            again. Suggest a storage approach that keeps that lookup fast.
-VERIFIED : Called the downloader twice against the same URL in a row. The
-           second call never touched yt-dlp, it returned the cached
-           VideoMetadata straight from the registry (confirmed via the
-           "cache hit" log line), and the file on disk matched what was
-           returned the first time.
 
-================================================================================
+--------------------------------------------------------------------------------
 S2 — Audio extraction
-================================================================================
+--------------------------------------------------------------------------------
 [S2-01]
 MODEL    : Claude
 PROMPT   : Ingestion is done. Now build the audio extraction stage: pull the
            audio out of the downloaded video with ffmpeg, in whatever
            format WhisperX/Vosk actually expect, plus a test for it.
 
-================================================================================
+--------------------------------------------------------------------------------
 S3 — Transcription (WhisperX word-level alignment)
-================================================================================
+--------------------------------------------------------------------------------
 [S3-01]
 MODEL    : Claude
 PROMPT   : Wire up WhisperX as the transcription engine. I need word-level
@@ -87,9 +83,9 @@ PROMPT   : WhisperX already segments its output into sentence-level chunks
            keeping the flat word list. Add a DialogueSegment type so the
            full transcript, every line spoken, in order, gets surfaced
            too, independent of whatever phrase is being searched for.
-================================================================================
+--------------------------------------------------------------------------------
 S4 — Fuzzy phrase matching
-================================================================================
+--------------------------------------------------------------------------------
 [S4-01]
 MODEL    : Claude
 PROMPT   : Build the phrase matcher. Slide a window over the transcript's
@@ -97,9 +93,9 @@ PROMPT   : Build the phrase matcher. Slide a window over the transcript's
            RapidFuzz, and return the best-scoring span's start time. It
            has to tolerate small ASR mistakes, not require an exact match.
 
-================================================================================
+--------------------------------------------------------------------------------
 S5 — Frame location (timestamp → exact frame)
-================================================================================
+--------------------------------------------------------------------------------
 [S5-01]
 MODEL    : Claude
 PROMPT   : Once I have the match's start_time in seconds, convert it to a
@@ -108,9 +104,9 @@ PROMPT   : Once I have the match's start_time in seconds, convert it to a
            seek doesn't land exactly on some codecs.
 
 
-================================================================================
+--------------------------------------------------------------------------------
 S6 — Output / storage
-================================================================================
+--------------------------------------------------------------------------------
 [S6-01]
 MODEL    : Claude
 PROMPT   : Wire up the last stage. Save the matched frame as a PNG and
@@ -120,17 +116,17 @@ PROMPT   : Wire up the last stage. Save the matched frame as a PNG and
            in its own file so repeated searches on the same video don't
            rewrite it every time.
 
-================================================================================
+--------------------------------------------------------------------------------
 INFRA — Docker, packaging, tooling
-================================================================================
+--------------------------------------------------------------------------------
 [INFRA-01]
 MODEL    : Claude
 PURPOSE  : Multi-stage Dockerfile with uv + ffmpeg
 PROMPT   : Fix my docker-caompose.ymal and Dockerfile
 
-================================================================================
+--------------------------------------------------------------------------------
 DEBUG — Fixes made after something broke
-================================================================================
+--------------------------------------------------------------------------------
 [DEBUG-01]
 MODEL    : Claude code
 PROMPT   : Fix the Runing issues  with this - uv run python -m src.main \

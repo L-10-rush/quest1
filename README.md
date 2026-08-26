@@ -2,9 +2,75 @@
 
 Given a video URL and a target line of spoken dialogue, this program finds the
 exact video frame where that line is spoken and reports its timestamp, frame
-number, matched text, and a saved image of that frame.
+number, matched text, a saved image of that frame, and whether the speaker
+was actually visible on camera saying it. If no target line is given, it
+starts an interactive session instead: transcribe the video once, then search
+it for as many lines as you want, one after another.
 
-**Example:**
+This was built for a technical assignment requiring exactly this — work
+against an arbitrary public video URL without manual inspection, and
+generalize to a different video or target line at evaluation time.
+
+## Contents
+
+- [Overview](#overview)
+- [Demo](#demo)
+- [Key Features](#key-features)
+- [How It Works](#how-it-works)
+- [Tech stack](#tech-stack)
+- [Project structure](#project-structure)
+- [Prerequisites](#prerequisites)
+- [Option A — Docker (recommended)](#option-a-docker-recommended)
+- [Option B — Native, with uv](#option-b-native-with-uv)
+- [CLI reference](#cli-reference)
+- [Interactive session mode](#interactive-session-mode)
+- [Terminal previews](#terminal-previews)
+- [Output layout](#output-layout)
+- [End-to-end verification](#end-to-end-verification)
+- [Potential Applications](#potential-applications)
+- [Documentation](#documentation)
+- [Known Limitations and Future Scope](#known-limitations-and-future-scope)
+- [Troubleshooting](#troubleshooting)
+- [Author](#author)
+- [Acknowledgments](#acknowledgments)
+
+---
+
+## Overview
+
+The dialogue in the target video isn't captioned or burned into the frame —
+it only exists in the audio track. That rules out OCR as the core mechanism
+and points straight at speech-to-text with word-level timestamps: transcribe
+the audio, find the phrase in the transcript, convert its timestamp to a
+frame number.
+
+One video is transcribed once and can then be searched as many times as
+needed — that single design choice is why the CLI supports two modes off the
+same pipeline:
+
+- **Single search** — `--url` + `--text` given together: one search, one
+  result, then exit. The classic one-shot CLI behavior.
+- **Interactive session** — `--url` only: the video is downloaded and
+  transcribed exactly once, then the CLI repeatedly prompts for a dialogue
+  line, searches the already-transcribed session for it, and loops until you
+  exit. See [Interactive session mode](#interactive-session-mode).
+
+"On-screen dialogue" has two readings: captioned text burned into the frame
+(ruled out — this project targets audio-only dialogue with no captions), and
+the speaking character being visibly on camera, as opposed to voice-over or
+off-screen narration. The pipeline answers the second reading too — stage 6
+verifies it with a self-contained OpenCV heuristic (face detection + mouth
+motion), no external API or hosted model required. See
+[approach.md](approach.md) for the full reasoning.
+
+## Demo
+
+**[Demo recording — Google Drive](https://drive.google.com/drive/folders/1JkGIC9JCMdgSLA2FZm255Zz7wxDQabgs?usp=drive_link)**
+
+A recorded run of the CLI against a real video URL, producing a timestamp,
+frame number, and saved frame image.
+
+### Example
 
 ```
 Timestamp : 00:00:42.360
@@ -15,8 +81,59 @@ Image     : output/248244667877/frames/frame_1059.png
 JSON      : output/248244667877/results/result_1059.json
 ```
 
-See [`approach.md`](approach.md) for the architecture and design rationale,
-and [`prompt.txt`](prompt.txt) for the AI-assistance prompt log.
+## Key Features
+
+- Word-level dialogue localization via WhisperX (faster-whisper + wav2vec2
+  forced alignment) — sub-100ms word timestamps, not just segment-level ones
+- Fuzzy phrase matching (RapidFuzz) tolerant of ASR transcription noise, with
+  a documented, never-silent uncertainty contract: a low-confidence match is
+  still returned, flagged, and explained rather than dropped
+- SQLite-backed video registry — a repeat run against the same URL skips the
+  download entirely and reuses the cached file
+- An interactive multi-query session — transcribe a video once, then search
+  it for as many dialogue lines as you want, no re-downloading or
+  re-transcribing per line
+- A full transcript of every line spoken in the video (not just the matched
+  phrase) persisted alongside each result, with word-count/confidence metrics
+- A pluggable transcription engine (WhisperX by default, Vosk as a
+  lightweight fallback) behind one interface, swappable with a single CLI flag
+- On-screen speaker verification (stage 6) — answers the more literal
+  "on-screen dialogue" question: was the speaker visibly on camera saying
+  the line, not just present somewhere in the audio. A self-contained
+  OpenCV face-detection + mouth-motion heuristic, no API key or hosted
+  service required (skippable with `--no-screen-verification`)
+- Inline terminal frame previews — the matched frame (and, when a search is
+  ambiguous, the other top candidates) rendered directly in the terminal in
+  color, no image viewer or special terminal required (see
+  [Terminal previews](#terminal-previews))
+- SOLID, interface-driven architecture — every stage is one class behind one
+  abstract interface, wired together in a single composition root
+- Dockerized, `uv`-managed dependency pinning (CPU-only torch wheels,
+  reproducible lockfile) for a build that doesn't drift between machines
+- 197 tests, mocked at each library boundary, running in a few seconds with
+  no network access required
+
+## How It Works
+
+```mermaid
+flowchart LR
+    URL(["video URL"]) --> DL["① Download<br/>yt-dlp"]
+    DL --> EX["② Extract audio<br/>ffmpeg → 16kHz mono WAV"]
+    EX --> TR["③ Transcribe<br/>WhisperX / Vosk"]
+    TR --> READY{{"session ready<br/>(video + transcript cached)"}}
+
+    READY --> HASTEXT{"--text given?"}
+    HASTEXT -- yes --> M1["④ Match phrase"] --> L1["⑤ Locate frame"] --> V1["⑥ Verify on-screen"] --> S1["⑦ Save result"] --> DONE1(["exit"])
+
+    HASTEXT -- no --> PROMPT(["dialogue> _"])
+    PROMPT --> M2["④ Match phrase"] --> L2["⑤ Locate frame"] --> V2["⑥ Verify on-screen"] --> S2["⑦ Save result"] --> PROMPT
+    PROMPT -- "exit / quit / Ctrl-D" --> CLEAN["cleanup work files"] --> DONE2(["exit"])
+```
+
+The full architecture, the data schema passed between stages, and the
+reasoning behind each design decision — including the OCR and plain-Whisper
+alternatives considered and why they were rejected — are documented in
+[approach.md](approach.md).
 
 ---
 
@@ -32,10 +149,45 @@ and [`prompt.txt`](prompt.txt) for the AI-assistance prompt log.
 | Fallback ASR engine | [Vosk](https://alphacephei.com/vosk/) |
 | Fuzzy phrase matching | [RapidFuzz](https://github.com/rapidfuzz/RapidFuzz) |
 | Frame extraction | [OpenCV](https://opencv.org/) (`opencv-python-headless`) |
+| On-screen verification | OpenCV Haar cascade face detection + mouth-motion heuristic (self-contained, no API key) |
 | Output | JSON (`stdlib json`) + PNG frame image |
 | Testing | pytest, pytest-cov |
 | Linting | ruff |
 | Containerization | Docker (multi-stage, `uv`-based build), Docker Compose |
+
+---
+
+## Project structure
+
+```
+.
+├── Dockerfile              # multi-stage, uv-based build
+├── docker-compose.yml
+├── pyproject.toml          # dependencies (uv)
+├── uv.lock                 # pinned, reproducible dependency graph
+├── .env.example
+├── approach.md
+├── prompt.txt
+├── src/
+│   ├── main.py              # CLI entrypoint / composition root
+│   ├── pipeline.py           # orchestrates all stages via interfaces only
+│   ├── config.py
+│   ├── ingestion/            # stage 1: yt-dlp download
+│   ├── audio/                # stage 2: ffmpeg extraction
+│   ├── transcription/        # stage 3: WhisperX / Vosk
+│   ├── matching/              # stage 4: RapidFuzz sliding-window match
+│   ├── frame_locator/         # stage 5: OpenCV seek + extract
+│   ├── screen_presence/        # stage 6: on-screen speaker verification
+│   ├── metrics/                  # transcript word/confidence metrics
+│   └── output/                    # stage 7: JSON + image persistence
+├── tests/
+├── work/                     # scratch: downloaded video/audio (gitignored)
+└── output/                   # result.json + frame images (gitignored)
+```
+
+Each stage lives behind an ABC in its `base.py`, and `main.py` is the only
+file that wires concrete implementations together — see `approach.md` §5 for
+the SOLID reasoning.
 
 ---
 
@@ -276,6 +428,9 @@ uv run ruff check .
 | `--device` | `cpu` | `cpu` or `cuda`. |
 | `--match-threshold` | `80` | Minimum fuzzy-match score (0–100) to be considered confident. |
 | `--window-size` | auto | Sliding-window width in words; defaults to the word count of `--text`. |
+| `--no-screen-verification` | off | Skip stage 6 (on-screen speaker verification) — only report where the line was said. |
+| `--no-images` | off | Don't render frame previews inline in the terminal (see [Terminal previews](#terminal-previews)). |
+| `--image-width` | `60` | Terminal columns wide for inline frame previews. |
 | `--work-dir` | `work` | Scratch dir for downloaded video / extracted audio. |
 | `--output-dir` | `output` | Where `result.json` + `frames/` are written. |
 | `--keep-work-files` | off | Don't delete downloaded video/audio after the run. |
@@ -297,25 +452,27 @@ uv run python -m src.main --url "https://ok.ru/video/248244667877"
 ```
 
 ```
-12:03:10 | INFO     | [1/4] downloading video: https://ok.ru/video/248244667877
-12:03:41 | INFO     | [2/4] extracting audio
-12:03:42 | INFO     | [3/4] transcribing (whisperx, model=small)
-12:04:05 | INFO     | [4/4] computing transcript metrics
+12:03:10 | INFO     | [1/7] downloading video: https://ok.ru/video/248244667877
+12:03:41 | INFO     | [2/7] extracting audio
+12:03:42 | INFO     | [3/7] transcribing (whisperx, model=small)
+12:04:05 | INFO     | [4/7] computing transcript metrics
 
 Ready -- "Fight Club (1999) - I Am Jack's...  Clip" downloaded and transcribed.
 Enter a line of dialogue to search for (or 'exit' to stop).
 
 dialogue> My mind rebels at stagnation
-12:04:12 | INFO     | [5/6] matching target phrase: 'My mind rebels at stagnation'
-12:04:12 | INFO     | [6/6] locating and saving frame at 42.360s
+12:04:12 | INFO     | [5/7] matching target phrase: 'My mind rebels at stagnation'
+12:04:12 | INFO     | [6/7] locating frame at 42.360s
+12:04:13 | INFO     | [7/7] verifying on-screen presence
 
 Timestamp : 00:00:42.360
 Frame     : 1059
 Text      : "My mind rebels at stagnation"
 Score     : 96.5
+OnScreen  : ON_SCREEN (confidence 0.87) -- a face was visible in 100% of sampled frames with mouth movement consistent with speech
 Image     : output/248244667877/frames/frame_1059.png
 JSON      : output/248244667877/results/result_1059.json
-Elapsed   : 0.4s
+Elapsed   : 0.6s
 
 dialogue> a second dialogue line
 ...
@@ -341,6 +498,44 @@ Notes:
 
 ---
 
+## Terminal previews
+
+Every result is printed with an inline preview of the matched frame,
+rendered directly in the terminal with 24-bit-color half-block characters —
+no image viewer, no image-protocol-specific terminal (Kitty/iTerm2/Sixel)
+required, works over plain SSH too. When the match is ambiguous (more than
+one candidate span cleared the threshold), the CLI also previews up to 3
+other top-scoring candidates side by side with their scores, so you can
+visually pick the right one instead of guessing from text alone:
+
+```
+Timestamp : 00:00:42.360
+...
+OnScreen  : ON_SCREEN (confidence 0.90) -- ...
+
+▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀   (the matched frame, in color)
+▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+
+Other candidates (2, for ambiguity review):
+  score=91.0  "my mind rebels, at stagnation"
+  ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+  ...
+```
+
+- On by default, and automatically skipped when stdout isn't a real
+  terminal (piped to a file, redirected in CI) — never dumps raw ANSI
+  escape codes into a log. `--no-images` opts out explicitly even on a
+  real terminal; `--image-width` controls how wide the preview renders
+  (default 60 columns).
+- Candidate previews are extracted only when there's genuine ambiguity
+  (more than one candidate cleared the threshold) and only when previews
+  are enabled — a single confident match never pays for the extra seeks.
+- Preview images are CLI-only and not written to disk or persisted in the
+  result JSON; the saved `frame_<n>.png` (winning match only, see
+  [Output layout](#output-layout)) remains the actual deliverable.
+
+---
+
 ## Output layout
 
 Results are keyed per video ID (parsed from the URL, or a stable hash
@@ -358,9 +553,11 @@ output/
 ```
 
 Each `result_<frame_number>.json` contains the timestamp/frame/matched text,
-the top scoring candidates (for ambiguity review), full transcript metrics
-(total/unique word counts, word-frequency table, ASR confidence stats,
-words-per-minute), and a `"transcript"` array — every line of dialogue
+a `"screen_presence"` verdict (`on_screen`/`off_screen`/`uncertain`, with a
+confidence and a plain-language reason — `null` if `--no-screen-verification`
+was set), the top scoring candidates (for ambiguity review), full transcript
+metrics (total/unique word counts, word-frequency table, ASR confidence
+stats, words-per-minute), and a `"transcript"` array — every line of dialogue
 spoken anywhere in the video (not just the matched target phrase), each
 with its own text, start/end timestamp, and confidence, in chronological
 order — see `approach.md` §4.1 for the full schema and rationale.
@@ -374,33 +571,41 @@ order — see `approach.md` §4.1 for the full schema and rationale.
 limitation of the environment, not a bug in `YtDlpDownloader` (which is
 unit-tested against a mocked yt-dlp boundary and works against any URL
 yt-dlp itself supports). To still prove the rest of the pipeline for real
-rather than only against mocks, stages 2–6 were run end-to-end against
+rather than only against mocks, every stage was run end-to-end against
 real, synthesized speech audio (`espeak-ng` speaking the target line,
 muxed into a small video with `ffmpeg`) using the actual, unmocked
 `FfmpegAudioExtractor`, `WhisperXEngine`, `FuzzyMatcher`,
-`OpenCvFrameLocator`, and `JsonResultStore`:
+`OpenCvFrameLocator`, `OpenCvScreenPresenceDetector`, and `JsonResultStore`:
 
 ```
-[2/6] extracting audio (real ffmpeg)...
-      -> smoke_test.wav, 2.37s, 16000Hz
-[3/6] transcribing (real WhisperX, model=small, cpu)...
-      -> 5 words in 61.7s
-         0.05-  0.17  'My'    conf=0.90
-         0.21-  0.50  'mind'  conf=0.84
-         0.58-  0.92  'rebels' conf=0.63
-         1.00-  1.06  'at'    conf=0.75
-         1.16-  1.91  'stagnation.' conf=0.87
-[4/6] computing transcript metrics...
-      -> total_words=5 unique_words=5 avg_confidence=0.80
-[5/6] matching target phrase: 'My mind rebels at stagnation'...
-      -> matched_text='My mind rebels at stagnation.' score=98.2 start=0.05s is_uncertain=False
-[6/6] locating and saving frame (real OpenCV)...
+[2/7] extracting audio (real ffmpeg)...
+      -> smoke.wav, 2.01s, 16000Hz
+[3/7] transcribing (real WhisperX, model=small, cpu)...
+      -> 5 words
+         0.03-0.18  'my'    conf=0.85
+         0.22-0.46  'mind'  conf=0.90
+         0.52-0.78  'rebels' conf=0.79
+         0.87-0.93  'at'    conf=0.90
+         1.01-1.68  'stagnation.' conf=0.91
+[5/7] matching target phrase...
+      -> matched_text='my mind rebels at stagnation.' score=98.2 start=0.034s is_uncertain=False
+[6/7] locating frame (real OpenCV)...
+[7/7] verifying on-screen presence (real Haar cascade)...
+      -> status=off_screen confidence=1.0 face_ratio=0.0 frames_sampled=7
 
-Timestamp : 00:00:00.054
-Frame     : 1
-Text      : "My mind rebels at stagnation."
+Timestamp : 00:00:00.034
+Frame     : 0
+Text      : "my mind rebels at stagnation."
 Score     : 98.2
+OnScreen  : OFF_SCREEN
 ```
+
+That `off_screen` result is honest, not a limitation being glossed over:
+the synthesized clip is a plain black frame with no face in it, so
+`off_screen` is the *correct* verdict — this run demonstrates the heuristic
+doesn't false-positive on a faceless video, not that it can find a real
+face (no labeled face-containing test video was available in this
+environment to demonstrate a true `on_screen` positive).
 
 Confirms, against real (not mocked) execution: ffmpeg audio extraction,
 WhisperX transcription with correct word-level timestamps, the fuzzy
@@ -413,36 +618,55 @@ silently wrong confident answer.
 
 ---
 
-## Project structure
+## Potential Applications
 
-```
-.
-├── Dockerfile              # multi-stage, uv-based build
-├── docker-compose.yml
-├── pyproject.toml          # dependencies (uv)
-├── uv.lock                 # pinned, reproducible dependency graph
-├── .env.example
-├── approach.md
-├── prompt.txt
-├── src/
-│   ├── main.py              # CLI entrypoint / composition root
-│   ├── pipeline.py           # orchestrates all stages via interfaces only
-│   ├── config.py
-│   ├── ingestion/            # stage 1: yt-dlp download
-│   ├── audio/                # stage 2: ffmpeg extraction
-│   ├── transcription/        # stage 3: WhisperX / Vosk
-│   ├── matching/              # stage 4: RapidFuzz sliding-window match
-│   ├── frame_locator/         # stage 5: OpenCV seek + extract
-│   ├── metrics/                # transcript word/confidence metrics
-│   └── output/                  # stage 6: JSON + image persistence
-├── tests/
-├── work/                     # scratch: downloaded video/audio (gitignored)
-└── output/                   # result.json + frame images (gitignored)
-```
+This started as a technical assignment, not a product, but the underlying
+capability — finding the exact frame a specific line was spoken in an
+arbitrary video — has uses beyond the assignment itself:
 
-Each stage lives behind an ABC in its `base.py`, and `main.py` is the only
-file that wires concrete implementations together — see `approach.md` §5 for
-the SOLID reasoning.
+- **Video editing / clip creation** — jump straight to the frame a quoted
+  line was said, instead of scrubbing a timeline by hand
+- **Content research** — locate a specific quote inside a long recording
+  (interview, lecture, podcast video) without watching it end to end
+- **QA / verification** — confirm a line was actually spoken, and exactly
+  when, against a transcript or subtitle claim
+
+None of this has been validated with real users or priced — it's the honest
+scope of what this pipeline could be extended toward, not a business plan.
+
+---
+
+## Documentation
+
+- [approach.md](approach.md) — architecture, sprint breakdown, the data-flow
+  diagram + schema, why audio + WhisperX was chosen over OCR/plain Whisper,
+  the dependency-pinning issues found and fixed getting WhisperX to actually
+  run, and known limitations
+- [prompt.txt](prompt.txt) — the AI-assistance prompt log for this build
+
+## Known Limitations and Future Scope
+
+- Assumes dialogue is spoken clearly enough for ASR — heavy background
+  music/noise degrades word-level alignment accuracy, and there's no
+  dedicated denoising stage in the current scope.
+- WhisperX's forced-alignment model is per-language; a language without a
+  dedicated wav2vec2 aligner falls back to interpolated (less precise) word
+  timestamps — a documented degradation, not a silent one.
+- On-screen verification (stage 6) is a face-detection + mouth-motion
+  heuristic, not a trained active-speaker-detection model — thresholds are
+  reasonable defaults, not empirically calibrated against a labeled dataset.
+  It can misread a visible-but-silent listener as `uncertain`, and a profile
+  face or poor lighting can defeat the underlying Haar cascade entirely.
+- **Future scope, not built for the deadline:** scene-cut detection to avoid
+  landing on a motion-blurred transition frame; an OCR + audio
+  cross-confirmation pass for videos where captions *are* burned in, to raise
+  confidence when both signals agree; swapping the on-screen heuristic for a
+  real local active-speaker-detection model if accuracy matters more than
+  zero extra dependencies.
+
+Full detail in approach.md's [§5 Future Scope](approach.md#5-additional-requirements-future-scope),
+[§12 Edge Cases](approach.md#12-edge-cases-and-handling), and
+[§13 Assumptions](approach.md#13-assumptions).
 
 ---
 
@@ -457,3 +681,19 @@ the SOLID reasoning.
 | `OSError: ... cannot enable executable stack as shared object requires` (native path, importing `whisperx`/`ctranslate2`) | A hardened-kernel host (e.g. CachyOS) rejecting a shared library's executable-stack ELF flag — the Docker image patches this at build time (see Dockerfile), but a **native** `uv sync` install needs it done once by hand: install `patchelf`, then run `find .venv -iname 'libctranslate2*.so*' -exec patchelf --clear-execstack {} \;`. |
 | `AttributeError: module 'torchaudio' has no attribute 'AudioMetaData'` / `RuntimeError: operator torchvision::nms does not exist` after editing dependency versions | A `torch`/`torchaudio`/`torchvision`/`pyannote-audio`/`whisperx` version mismatch — each of `torch`, `torchaudio`, and `torchvision` must come from the same CPU wheel index (see `[tool.uv.sources]` in `pyproject.toml`) and `whisperx`/`pyannote-audio`/`numpy` are pinned to specific minimum versions for a reason (see the comments beside each in `pyproject.toml`). Re-run `uv lock && uv sync` after any change to these rather than hand-editing `uv.lock`. |
 | `ok.ru` download fails with a connection reset | Some sandboxed/CI network environments block or reset connections to `ok.ru` specifically — not a code bug (`YtDlpDownloader` is unit-tested independently of this, and yt-dlp itself works against any URL it supports). Try from a machine/network with unrestricted outbound access. |
+
+---
+
+## Author
+
+**L-10-rush**
+
+GitHub: [github.com/L-10-rush](https://github.com/L-10-rush)
+
+## Acknowledgments
+
+This project builds on [yt-dlp](https://github.com/yt-dlp/yt-dlp),
+[ffmpeg](https://ffmpeg.org/), [WhisperX](https://github.com/m-bain/whisperX)
+(faster-whisper + wav2vec2 forced alignment), [Vosk](https://alphacephei.com/vosk/),
+[RapidFuzz](https://github.com/rapidfuzz/RapidFuzz), [OpenCV](https://opencv.org/),
+and [uv](https://docs.astral.sh/uv/).

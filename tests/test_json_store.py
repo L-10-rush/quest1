@@ -9,6 +9,7 @@ from src.ingestion.base import VideoMetadata
 from src.matching.base import MatchCandidate, MatchResult
 from src.metrics.transcript_metrics import TranscriptMetrics
 from src.output.json_store import JsonResultStore
+from src.screen_presence.base import ScreenPresenceResult
 from src.transcription.base import DialogueSegment, TranscriptResult, Word
 
 
@@ -84,13 +85,25 @@ def transcript() -> TranscriptResult:
     )
 
 
+@pytest.fixture()
+def screen_presence() -> ScreenPresenceResult:
+    return ScreenPresenceResult(
+        status="on_screen",
+        confidence=0.87,
+        reason="a face was visible in 100% of sampled frames with mouth movement consistent with speech",
+        face_ratio=1.0,
+        mouth_motion_score=0.06,
+        frames_sampled=8,
+    )
+
+
 class TestJsonResultStore:
     def test_writes_result_json_and_frame_image(
-        self, tmp_path: Path, video, match, frame, metrics, transcript
+        self, tmp_path: Path, video, match, frame, metrics, transcript, screen_presence
     ):
         store = JsonResultStore(output_dir=tmp_path)
         result_path = store.save(
-            video, "My mind rebels at stagnation", match, frame, metrics, transcript
+            video, "My mind rebels at stagnation", match, frame, metrics, transcript, screen_presence
         )
 
         assert result_path.exists()
@@ -106,10 +119,10 @@ class TestJsonResultStore:
         assert payload["transcript_metrics"]["word_frequencies"]["the"] == 10
 
     def test_writes_full_transcript_of_every_dialogue_line(
-        self, tmp_path: Path, video, match, frame, metrics, transcript
+        self, tmp_path: Path, video, match, frame, metrics, transcript, screen_presence
     ):
         store = JsonResultStore(output_dir=tmp_path)
-        result_path = store.save(video, "anything", match, frame, metrics, transcript)
+        result_path = store.save(video, "anything", match, frame, metrics, transcript, screen_presence)
 
         payload = json.loads(result_path.read_text())
         assert len(payload["transcript"]) == 2
@@ -119,19 +132,41 @@ class TestJsonResultStore:
         assert payload["transcript"][1]["start_seconds"] == 42.0
         assert payload["transcript"][1]["confidence"] == 0.95
 
-    def test_video_meta_written_once_and_reused_across_runs(
+    def test_writes_screen_presence_verdict(
+        self, tmp_path: Path, video, match, frame, metrics, transcript, screen_presence
+    ):
+        store = JsonResultStore(output_dir=tmp_path)
+        result_path = store.save(video, "anything", match, frame, metrics, transcript, screen_presence)
+
+        payload = json.loads(result_path.read_text())
+        on_screen = payload["result"]["screen_presence"]
+        assert on_screen["status"] == "on_screen"
+        assert on_screen["confidence"] == 0.87
+        assert on_screen["face_ratio"] == 1.0
+        assert on_screen["frames_sampled"] == 8
+
+    def test_screen_presence_is_null_when_verification_was_skipped(
         self, tmp_path: Path, video, match, frame, metrics, transcript
     ):
         store = JsonResultStore(output_dir=tmp_path)
-        store.save(video, "first query", match, frame, metrics, transcript)
+        result_path = store.save(video, "anything", match, frame, metrics, transcript, None)
+
+        payload = json.loads(result_path.read_text())
+        assert payload["result"]["screen_presence"] is None
+
+    def test_video_meta_written_once_and_reused_across_runs(
+        self, tmp_path: Path, video, match, frame, metrics, transcript, screen_presence
+    ):
+        store = JsonResultStore(output_dir=tmp_path)
+        store.save(video, "first query", match, frame, metrics, transcript, screen_presence)
         meta_path = tmp_path / video.video_id / f"{video.video_id}.meta.json"
         first_mtime = meta_path.stat().st_mtime_ns
 
-        store.save(video, "second query", match, frame, metrics, transcript)
+        store.save(video, "second query", match, frame, metrics, transcript, screen_presence)
         assert meta_path.stat().st_mtime_ns == first_mtime
 
     def test_rejects_match_result_with_no_best(
-        self, tmp_path: Path, video, frame, metrics, transcript
+        self, tmp_path: Path, video, frame, metrics, transcript, screen_presence
     ):
         from src.exceptions import ResultPersistenceError
 
@@ -140,4 +175,4 @@ class TestJsonResultStore:
         )
         store = JsonResultStore(output_dir=tmp_path)
         with pytest.raises(ResultPersistenceError):
-            store.save(video, "anything", empty_match, frame, metrics, transcript)
+            store.save(video, "anything", empty_match, frame, metrics, transcript, screen_presence)

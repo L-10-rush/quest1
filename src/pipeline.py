@@ -1,8 +1,8 @@
-"""Orchestrates all six stages behind their abstract interfaces only.
+"""Orchestrates all seven stages behind their abstract interfaces only.
 
 This is the Dependency Inversion centerpiece: `DialoguePipeline` is
-constructed with six interfaces (not concrete classes) and never imports a
-single concrete implementation. `main.py` is the only file that wires
+constructed with seven interfaces (not concrete classes) and never imports
+a single concrete implementation. `main.py` is the only file that wires
 interfaces to implementations (the composition root) -- swapping WhisperX
 for Vosk, or the fuzzy matcher for something else, never requires touching
 this file (Open/Closed).
@@ -14,13 +14,17 @@ import logging
 import time
 from dataclasses import dataclass
 
+import numpy as np
+
 from src.audio.base import AudioAsset, AudioExtractor
 from src.config import PipelineConfig
+from src.exceptions import FrameExtractionError
 from src.frame_locator.base import FrameLocator
 from src.ingestion.base import VideoDownloader, VideoMetadata
 from src.matching.base import PhraseMatcher
 from src.metrics.transcript_metrics import TranscriptMetrics, compute_transcript_metrics
 from src.output.base import ResultStore
+from src.screen_presence.base import ScreenPresenceDetector
 from src.transcription.base import TranscriptionEngine, TranscriptResult
 
 logger = logging.getLogger(__name__)
@@ -55,10 +59,24 @@ class PipelineRunSummary:
     result_json_path: str
     frame_image_path: str
     total_seconds: float
+    # None when --no-screen-verification skipped stage 6.
+    screen_status: str | None = None
+    screen_confidence: float | None = None
+    screen_reason: str | None = None
+    # CLI-preview-only data, never persisted to the result JSON (that's
+    # built separately by ResultStore from the raw stage outputs). None /
+    # empty when --no-images was passed. See utils/terminal_image.py.
+    best_frame_image: np.ndarray | None = None
+    candidate_previews: tuple[tuple[str, float, np.ndarray], ...] = ()  # (matched_text, score, image)
 
 
 class DialoguePipeline:
-    """Runs the six-stage pipeline described in approach.md §3."""
+    """Runs the seven-stage pipeline described in approach.md §3."""
+
+    #: How many *other* top candidates (besides the winner) get a preview
+    #: frame extracted for ambiguity review -- capped so an interactive
+    #: session with a heavily repeated line doesn't seek the whole video.
+    _MAX_CANDIDATE_PREVIEWS = 3
 
     def __init__(
         self,
@@ -67,6 +85,7 @@ class DialoguePipeline:
         transcriber: TranscriptionEngine,
         matcher: PhraseMatcher,
         frame_locator: FrameLocator,
+        screen_presence_detector: ScreenPresenceDetector,
         result_store: ResultStore,
         config: PipelineConfig,
     ) -> None:
@@ -75,11 +94,12 @@ class DialoguePipeline:
         self._transcriber = transcriber
         self._matcher = matcher
         self._frame_locator = frame_locator
+        self._screen_presence_detector = screen_presence_detector
         self._result_store = result_store
         self._config = config
 
     def prepare(self) -> PreparedSession:
-        """Stages 1-4 of 6: download, extract audio, transcribe, compute
+        """Stages 1-4 of 7: download, extract audio, transcribe, compute
         metrics.
 
         Runs exactly once per video URL -- the returned `PreparedSession`
@@ -89,38 +109,64 @@ class DialoguePipeline:
         """
         cfg = self._config
 
-        logger.info("[1/6] downloading video: %s", cfg.video_url)
+        logger.info("[1/7] downloading video: %s", cfg.video_url)
         video = self._downloader.download(cfg.video_url, cfg.work_dir)
 
-        logger.info("[2/6] extracting audio")
+        logger.info("[2/7] extracting audio")
         audio = self._audio_extractor.extract(video, cfg.work_dir)
 
-        logger.info("[3/6] transcribing (%s, model=%s)", cfg.engine, cfg.whisper_model)
+        logger.info("[3/7] transcribing (%s, model=%s)", cfg.engine, cfg.whisper_model)
         transcript = self._transcriber.transcribe(audio, cfg.language)
 
-        logger.info("[4/6] computing transcript metrics")
+        logger.info("[4/7] computing transcript metrics")
         metrics = compute_transcript_metrics(transcript)
 
         return PreparedSession(video=video, audio=audio, transcript=transcript, metrics=metrics)
 
     def locate_dialogue(self, session: PreparedSession, target_text: str) -> PipelineRunSummary:
-        """Stages 5-6: fuzzy-match `target_text` against the already
-        transcribed session and locate+save the matching frame. Safe to
+        """Stages 5-7: fuzzy-match `target_text` against the already
+        transcribed session, locate the matching frame, verify the speaker
+        was visibly on camera (stage 6, unless disabled), and save. Safe to
         call repeatedly against the same `session` for different phrases."""
         start = time.perf_counter()
         cfg = self._config
 
-        logger.info("[5/6] matching target phrase: %r", target_text)
+        logger.info("[5/7] matching target phrase: %r", target_text)
         match = self._matcher.match(
             session.transcript, target_text, cfg.match_threshold, cfg.window_size
         )
         if match.is_uncertain:
             logger.warning("match flagged uncertain: %s", match.uncertainty_reason)
 
-        logger.info("[6/6] locating and saving frame at %.3fs", match.best.start_seconds)
+        logger.info("[6/7] locating frame at %.3fs", match.best.start_seconds)
         frame = self._frame_locator.locate(session.video, match.best.start_seconds)
+
+        candidate_previews: list[tuple[str, float, np.ndarray]] = []
+        if cfg.show_images:
+            others = [c for c in match.candidates if c is not match.best]
+            for candidate in others[: self._MAX_CANDIDATE_PREVIEWS]:
+                try:
+                    candidate_frame = self._frame_locator.locate(session.video, candidate.start_seconds)
+                except FrameExtractionError:
+                    # A preview is best-effort -- never worth failing the
+                    # whole search over a candidate thumbnail.
+                    logger.debug("could not extract a preview frame for a candidate", exc_info=True)
+                    continue
+                candidate_previews.append((candidate.matched_text, candidate.score, candidate_frame.image))
+
+        screen_presence = None
+        if cfg.verify_screen_presence:
+            logger.info("[7/7] verifying on-screen presence")
+            screen_presence = self._screen_presence_detector.verify(
+                session.video, match.best.start_seconds, match.best.end_seconds
+            )
+            if screen_presence.status != "on_screen":
+                logger.warning(
+                    "screen presence flagged %s: %s", screen_presence.status, screen_presence.reason
+                )
+
         result_path = self._result_store.save(
-            session.video, target_text, match, frame, session.metrics, session.transcript
+            session.video, target_text, match, frame, session.metrics, session.transcript, screen_presence
         )
 
         return PipelineRunSummary(
@@ -133,6 +179,11 @@ class DialoguePipeline:
             result_json_path=str(result_path),
             frame_image_path=str(result_path.parent.parent / "frames" / f"frame_{frame.frame_number}.png"),
             total_seconds=time.perf_counter() - start,
+            screen_status=screen_presence.status if screen_presence else None,
+            screen_confidence=screen_presence.confidence if screen_presence else None,
+            screen_reason=screen_presence.reason if screen_presence else None,
+            best_frame_image=frame.image,
+            candidate_previews=tuple(candidate_previews),
         )
 
     def cleanup(self, session: PreparedSession) -> None:

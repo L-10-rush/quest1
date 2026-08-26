@@ -42,6 +42,17 @@ class PipelineConfig:
     output_dir: Path = field(default_factory=lambda: Path("output"))
     keep_work_files: bool = False
     verbose: bool = False
+    # Stage 6: whether to verify the speaker was visibly on camera, not
+    # just that the line was said somewhere in the audio (see
+    # screen_presence/base.py). On by default -- it's what answers the
+    # literal "on-screen dialogue" reading of the problem statement.
+    verify_screen_presence: bool = True
+    # Inline terminal preview of the matched frame + top candidates (see
+    # utils/terminal_image.py). main.py additionally checks isatty() before
+    # actually rendering, so this stays True by default without ever
+    # dumping raw ANSI escapes into a redirected/piped output.
+    show_images: bool = True
+    image_width: int = 60
 
     def __post_init__(self) -> None:
         if not self.video_url.strip():
@@ -52,6 +63,8 @@ class PipelineConfig:
             raise ValueError("match_threshold must be between 0 and 100")
         if self.engine not in ("whisperx", "vosk"):
             raise ValueError(f"unknown engine: {self.engine!r}")
+        if self.image_width <= 0:
+            raise ValueError("image_width must be positive")
 
 
 def _env_default(name: str, fallback: str) -> str:
@@ -130,6 +143,29 @@ def build_arg_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Do not delete downloaded video / extracted audio after the run.",
     )
+    parser.add_argument(
+        "--no-screen-verification",
+        action="store_false",
+        dest="verify_screen_presence",
+        default=True,
+        help=(
+            "Skip on-screen speaker verification (stage 6) -- only report where "
+            "the line was said, not whether the speaker was visibly on camera."
+        ),
+    )
+    parser.add_argument(
+        "--no-images",
+        action="store_false",
+        dest="show_images",
+        default=True,
+        help="Don't render frame previews inline in the terminal (see --image-width).",
+    )
+    parser.add_argument(
+        "--image-width",
+        type=int,
+        default=60,
+        help="Terminal columns wide for inline frame previews (default: 60).",
+    )
     parser.add_argument("--verbose", action="store_true", help="Enable debug-level logging.")
     return parser
 
@@ -150,4 +186,7 @@ def config_from_args(argv: list[str] | None = None) -> PipelineConfig:
         output_dir=args.output_dir,
         keep_work_files=args.keep_work_files,
         verbose=args.verbose,
+        verify_screen_presence=args.verify_screen_presence,
+        show_images=args.show_images,
+        image_width=args.image_width,
     )

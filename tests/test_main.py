@@ -16,12 +16,14 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 
 import src.main as main_module
 from src.config import PipelineConfig
 from src.exceptions import DownloadError, ResultPersistenceError
 from src.pipeline import PipelineRunSummary, PreparedSession
+from src.screen_presence.opencv_detector import OpenCvScreenPresenceDetector
 from src.transcription.vosk_engine import VoskEngine
 from src.transcription.whisperx_engine import WhisperXEngine
 
@@ -88,6 +90,13 @@ class TestBuildTranscriber:
     def test_vosk_engine_selected_when_configured(self):
         config = PipelineConfig(video_url="https://example.com/v", target_text="hi", engine="vosk")
         assert isinstance(main_module._build_transcriber(config), VoskEngine)
+
+
+class TestBuildPipeline:
+    def test_wires_the_opencv_screen_presence_detector(self):
+        config = PipelineConfig(video_url="https://example.com/v", target_text="hi")
+        pipeline = main_module.build_pipeline(config)
+        assert isinstance(pipeline._screen_presence_detector, OpenCvScreenPresenceDetector)
 
 
 class TestMainExitCodes:
@@ -233,3 +242,136 @@ class TestMainInteractiveSession:
         assert exit_code == 0
         assert fake.locate_calls == []
         assert fake.cleanup_calls == [FAKE_SESSION]
+
+
+class TestScreenPresenceSummaryLine:
+    """Stage 6's verdict (on/off/uncertain), when present, is printed as
+    its own line -- answering the literal "was the speaker on camera"
+    question alongside "where was this said"."""
+
+    def test_on_screen_status_is_printed(self, monkeypatch, capsys):
+        summary = PipelineRunSummary(
+            timestamp="00:00:42.360",
+            frame_number=1059,
+            matched_text="My mind rebels at stagnation",
+            match_score=96.5,
+            is_uncertain=False,
+            uncertainty_reason=None,
+            result_json_path="output/248244667877/results/result_1059.json",
+            frame_image_path="output/248244667877/frames/frame_1059.png",
+            total_seconds=12.3,
+            screen_status="on_screen",
+            screen_confidence=0.9,
+            screen_reason="a face was visible in 100% of sampled frames with mouth movement consistent with speech",
+        )
+        _stub_build_pipeline(monkeypatch, locate_outcomes=[summary])
+
+        main_module.main(MIN_ARGS)
+
+        out = capsys.readouterr().out
+        assert "OnScreen  : ON_SCREEN (confidence 0.90)" in out
+        assert "mouth movement" in out
+
+    def test_no_on_screen_line_when_verification_was_skipped(self, monkeypatch, capsys):
+        # SUCCESS_SUMMARY leaves screen_status at its default (None), the
+        # same shape --no-screen-verification produces.
+        _stub_build_pipeline(monkeypatch, locate_outcomes=[SUCCESS_SUMMARY])
+
+        main_module.main(MIN_ARGS)
+
+        assert "OnScreen" not in capsys.readouterr().out
+
+
+class TestPrintSummaryImages:
+    """Inline terminal frame previews (see utils/terminal_image.py) --
+    _print_summary is tested directly here so the assertions don't depend
+    on faking a real tty just to exercise the rendering branch."""
+
+    def test_renders_best_frame_when_show_images_true(self, capsys):
+        summary = PipelineRunSummary(
+            timestamp="00:00:42.360", frame_number=1059, matched_text="hi", match_score=96.5,
+            is_uncertain=False, uncertainty_reason=None, result_json_path="x.json",
+            frame_image_path="x.png", total_seconds=1.0,
+            best_frame_image=np.zeros((10, 10, 3), dtype=np.uint8),
+        )
+
+        main_module._print_summary(summary, show_images=True, image_width=10)
+
+        assert "\033[38;2;" in capsys.readouterr().out
+
+    def test_no_image_rendered_when_show_images_false(self, capsys):
+        summary = PipelineRunSummary(
+            timestamp="00:00:42.360", frame_number=1059, matched_text="hi", match_score=96.5,
+            is_uncertain=False, uncertainty_reason=None, result_json_path="x.json",
+            frame_image_path="x.png", total_seconds=1.0,
+            best_frame_image=np.zeros((10, 10, 3), dtype=np.uint8),
+        )
+
+        main_module._print_summary(summary, show_images=False, image_width=10)
+
+        assert "\033[38;2;" not in capsys.readouterr().out
+
+    def test_candidate_previews_shown_with_scores(self, capsys):
+        summary = PipelineRunSummary(
+            timestamp="00:00:42.360", frame_number=1059, matched_text="hi", match_score=96.5,
+            is_uncertain=False, uncertainty_reason=None, result_json_path="x.json",
+            frame_image_path="x.png", total_seconds=1.0,
+            candidate_previews=(
+                ("second candidate text", 91.0, np.zeros((10, 10, 3), dtype=np.uint8)),
+            ),
+        )
+
+        main_module._print_summary(summary, show_images=True, image_width=10)
+
+        out = capsys.readouterr().out
+        assert "Other candidates (1, for ambiguity review):" in out
+        assert 'score=91.0  "second candidate text"' in out
+
+    def test_no_candidate_section_when_none_present(self, capsys):
+        main_module._print_summary(SUCCESS_SUMMARY, show_images=True, image_width=10)
+
+        assert "Other candidates" not in capsys.readouterr().out
+
+    def test_main_never_renders_images_when_stdout_is_not_a_tty(self, monkeypatch, capsys):
+        """main() gates on isatty(), not just config.show_images -- pytest's
+        capsys stdout isn't a real tty, so this proves the gate holds
+        without needing to fake a terminal."""
+        summary = PipelineRunSummary(
+            timestamp="00:00:42.360", frame_number=1059, matched_text="My mind rebels at stagnation",
+            match_score=96.5, is_uncertain=False, uncertainty_reason=None, result_json_path="x.json",
+            frame_image_path="x.png", total_seconds=1.0,
+            best_frame_image=np.zeros((10, 10, 3), dtype=np.uint8),
+        )
+        _stub_build_pipeline(monkeypatch, locate_outcomes=[summary])
+
+        main_module.main(MIN_ARGS)
+
+        assert "\033[38;2;" not in capsys.readouterr().out
+
+    def test_main_renders_images_when_stdout_is_a_tty(self, monkeypatch, capsys):
+        summary = PipelineRunSummary(
+            timestamp="00:00:42.360", frame_number=1059, matched_text="My mind rebels at stagnation",
+            match_score=96.5, is_uncertain=False, uncertainty_reason=None, result_json_path="x.json",
+            frame_image_path="x.png", total_seconds=1.0,
+            best_frame_image=np.zeros((10, 10, 3), dtype=np.uint8),
+        )
+        _stub_build_pipeline(monkeypatch, locate_outcomes=[summary])
+        monkeypatch.setattr(main_module.sys.stdout, "isatty", lambda: True)
+
+        main_module.main(MIN_ARGS)
+
+        assert "\033[38;2;" in capsys.readouterr().out
+
+    def test_no_images_flag_wins_even_on_a_real_tty(self, monkeypatch, capsys):
+        summary = PipelineRunSummary(
+            timestamp="00:00:42.360", frame_number=1059, matched_text="My mind rebels at stagnation",
+            match_score=96.5, is_uncertain=False, uncertainty_reason=None, result_json_path="x.json",
+            frame_image_path="x.png", total_seconds=1.0,
+            best_frame_image=np.zeros((10, 10, 3), dtype=np.uint8),
+        )
+        _stub_build_pipeline(monkeypatch, locate_outcomes=[summary])
+        monkeypatch.setattr(main_module.sys.stdout, "isatty", lambda: True)
+
+        main_module.main([*MIN_ARGS, "--no-images"])
+
+        assert "\033[38;2;" not in capsys.readouterr().out

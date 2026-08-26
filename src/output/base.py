@@ -1,4 +1,4 @@
-"""ResultStore interface (Dependency Inversion boundary for stage 6)."""
+"""ResultStore interface (Dependency Inversion boundary for stage 7)."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ from src.frame_locator.base import FrameResult
 from src.ingestion.base import VideoMetadata
 from src.matching.base import MatchResult
 from src.metrics.transcript_metrics import TranscriptMetrics
+from src.screen_presence.base import ScreenPresenceResult
 from src.transcription.base import TranscriptResult
 
 
@@ -24,8 +25,13 @@ class ResultStore(ABC):
         frame: FrameResult,
         metrics: TranscriptMetrics,
         transcript: TranscriptResult,
+        screen_presence: ScreenPresenceResult | None,
     ) -> Path:
         """Persist the run and return the path to the written `result.json`.
+
+        `screen_presence` is `None` when `--no-screen-verification` skipped
+        stage 6 -- implementations MUST omit it (or write it as `null`)
+        rather than fabricate a verdict.
 
         Implementations MUST raise `exceptions.ResultPersistenceError` on
         failure (e.g. unwritable output directory).

@@ -1,7 +1,7 @@
 """Integration test of DialoguePipeline.run() against fake stage
 implementations -- no real network, model, or media file involved.
 
-Sprint 3 (robustness): proves the six stages actually wire together in the
+Sprint 3 (robustness): proves the seven stages actually wire together in the
 right order and pass the right data at each hand-off (Dependency
 Inversion in practice, not just in theory), that an uncertain match still
 produces a full result instead of a silent/partial failure, that
@@ -23,6 +23,7 @@ from src.ingestion.base import VideoDownloader, VideoMetadata
 from src.matching.base import MatchCandidate, MatchResult, PhraseMatcher
 from src.output.base import ResultStore
 from src.pipeline import DialoguePipeline
+from src.screen_presence.base import ScreenPresenceDetector, ScreenPresenceResult
 from src.transcription.base import TranscriptionEngine, TranscriptResult, Word
 
 
@@ -67,13 +68,28 @@ class FakeMatcher(PhraseMatcher):
 
 
 class FakeFrameLocator(FrameLocator):
-    def __init__(self, frame: FrameResult):
+    def __init__(self, frame: FrameResult, raise_at: set[float] | None = None):
         self.frame = frame
         self.calls: list[tuple[VideoMetadata, float]] = []
+        self._raise_at = raise_at or set()
 
     def locate(self, video: VideoMetadata, timestamp_seconds: float) -> FrameResult:
         self.calls.append((video, timestamp_seconds))
+        if timestamp_seconds in self._raise_at:
+            from src.exceptions import FrameExtractionError
+
+            raise FrameExtractionError(f"boom at {timestamp_seconds}")
         return self.frame
+
+
+class FakeScreenPresenceDetector(ScreenPresenceDetector):
+    def __init__(self, result: ScreenPresenceResult):
+        self.result = result
+        self.calls: list[tuple[VideoMetadata, float, float]] = []
+
+    def verify(self, video, start_seconds, end_seconds) -> ScreenPresenceResult:
+        self.calls.append((video, start_seconds, end_seconds))
+        return self.result
 
 
 class FakeResultStore(ResultStore):
@@ -81,8 +97,8 @@ class FakeResultStore(ResultStore):
         self.result_path = result_path
         self.calls: list[tuple] = []
 
-    def save(self, video, target_text, match, frame, metrics, transcript) -> Path:
-        self.calls.append((video, target_text, match, frame, metrics, transcript))
+    def save(self, video, target_text, match, frame, metrics, transcript, screen_presence) -> Path:
+        self.calls.append((video, target_text, match, frame, metrics, transcript, screen_presence))
         return self.result_path
 
 
@@ -108,7 +124,43 @@ def confident_match(transcript: TranscriptResult) -> MatchResult:
     return MatchResult(best=candidate, candidates=(candidate,), is_uncertain=False, uncertainty_reason=None)
 
 
-def _build_pipeline(tmp_path: Path, config: PipelineConfig, match_result: MatchResult):
+@pytest.fixture()
+def multi_candidate_match() -> MatchResult:
+    """A best match plus four other candidates -- one more than
+    DialoguePipeline._MAX_CANDIDATE_PREVIEWS, to prove the cap applies."""
+    best = MatchCandidate(
+        matched_text="My mind rebels at stagnation", start_seconds=0.0, end_seconds=1.5,
+        score=100.0, word_start_index=0, word_end_index=5,
+    )
+    others = [
+        MatchCandidate(
+            matched_text=f"my mind rebels at stagnation ({i})", start_seconds=float(5 * i),
+            end_seconds=float(5 * i + 1.5), score=95.0 - i, word_start_index=10 * i, word_end_index=10 * i + 5,
+        )
+        for i in range(1, 5)
+    ]
+    return MatchResult(
+        best=best, candidates=(best, *others), is_uncertain=False, uncertainty_reason=None
+    )
+
+
+_DEFAULT_SCREEN_RESULT = ScreenPresenceResult(
+    status="on_screen",
+    confidence=0.9,
+    reason="a face was visible in 100% of sampled frames with mouth movement consistent with speech",
+    face_ratio=1.0,
+    mouth_motion_score=0.05,
+    frames_sampled=8,
+)
+
+
+def _build_pipeline(
+    tmp_path: Path,
+    config: PipelineConfig,
+    match_result: MatchResult,
+    screen_presence_result: ScreenPresenceResult | None = None,
+    frame_locator_raise_at: set[float] | None = None,
+):
     video_file = tmp_path / "video.mp4"
     audio_file = tmp_path / "audio.wav"
     video_file.write_bytes(b"fake video")
@@ -143,7 +195,8 @@ def _build_pipeline(tmp_path: Path, config: PipelineConfig, match_result: MatchR
     audio_extractor = FakeAudioExtractor(audio)
     transcriber = FakeTranscriber(transcript)
     matcher = FakeMatcher(match_result)
-    frame_locator = FakeFrameLocator(frame)
+    frame_locator = FakeFrameLocator(frame, raise_at=frame_locator_raise_at)
+    screen_presence_detector = FakeScreenPresenceDetector(screen_presence_result or _DEFAULT_SCREEN_RESULT)
     result_store = FakeResultStore(result_path)
 
     pipeline = DialoguePipeline(
@@ -152,6 +205,7 @@ def _build_pipeline(tmp_path: Path, config: PipelineConfig, match_result: MatchR
         transcriber=transcriber,
         matcher=matcher,
         frame_locator=frame_locator,
+        screen_presence_detector=screen_presence_detector,
         result_store=result_store,
         config=config,
     )
@@ -161,6 +215,7 @@ def _build_pipeline(tmp_path: Path, config: PipelineConfig, match_result: MatchR
         "transcriber": transcriber,
         "matcher": matcher,
         "frame_locator": frame_locator,
+        "screen_presence_detector": screen_presence_detector,
         "result_store": result_store,
         "video_file": video_file,
         "audio_file": audio_file,
@@ -403,3 +458,197 @@ class TestPreparedSessionReuse:
 
         with pytest.raises(ValueError, match="target_text"):
             pipeline.run()
+
+
+class TestScreenPresenceVerification:
+    """Stage 6: answers the more literal "on-screen dialogue" reading --
+    was the speaker visibly on camera, not just present somewhere in the
+    audio. On by default; skippable with --no-screen-verification."""
+
+    def test_detector_called_with_the_matched_window(self, tmp_path, confident_match):
+        config = PipelineConfig(
+            video_url="https://ok.ru/video/248244667877",
+            target_text="My mind rebels at stagnation",
+            work_dir=tmp_path,
+            output_dir=tmp_path / "output",
+            keep_work_files=True,
+        )
+        pipeline, fakes = _build_pipeline(tmp_path, config, confident_match)
+
+        pipeline.run()
+
+        video = fakes["downloader"].video
+        # verified with the MATCHER's chosen span, not some independently
+        # recomputed window -- proves the hand-off, same as the frame locator.
+        assert fakes["screen_presence_detector"].calls == [
+            (video, confident_match.best.start_seconds, confident_match.best.end_seconds)
+        ]
+
+    def test_summary_carries_screen_presence_fields(self, tmp_path, confident_match):
+        config = PipelineConfig(
+            video_url="https://ok.ru/video/248244667877",
+            target_text="My mind rebels at stagnation",
+            work_dir=tmp_path,
+            output_dir=tmp_path / "output",
+            keep_work_files=True,
+        )
+        pipeline, _ = _build_pipeline(tmp_path, config, confident_match)
+
+        summary = pipeline.run()
+
+        assert summary.screen_status == "on_screen"
+        assert summary.screen_confidence == 0.9
+        assert "mouth movement" in summary.screen_reason
+
+    def test_result_store_receives_the_screen_presence_result(self, tmp_path, confident_match):
+        config = PipelineConfig(
+            video_url="https://ok.ru/video/248244667877",
+            target_text="My mind rebels at stagnation",
+            work_dir=tmp_path,
+            output_dir=tmp_path / "output",
+            keep_work_files=True,
+        )
+        pipeline, fakes = _build_pipeline(tmp_path, config, confident_match)
+
+        pipeline.run()
+
+        saved_screen_presence = fakes["result_store"].calls[0][6]
+        assert saved_screen_presence is _DEFAULT_SCREEN_RESULT
+
+    def test_skipped_entirely_when_disabled(self, tmp_path, confident_match):
+        config = PipelineConfig(
+            video_url="https://ok.ru/video/248244667877",
+            target_text="My mind rebels at stagnation",
+            work_dir=tmp_path,
+            output_dir=tmp_path / "output",
+            keep_work_files=True,
+            verify_screen_presence=False,
+        )
+        pipeline, fakes = _build_pipeline(tmp_path, config, confident_match)
+
+        summary = pipeline.run()
+
+        assert fakes["screen_presence_detector"].calls == []
+        assert summary.screen_status is None
+        assert summary.screen_confidence is None
+        assert summary.screen_reason is None
+        # a skipped verification is persisted as None, never a fabricated verdict
+        assert fakes["result_store"].calls[0][6] is None
+
+    def test_non_on_screen_status_logs_a_warning(
+        self, tmp_path, confident_match, caplog: pytest.LogCaptureFixture
+    ):
+        off_screen_result = ScreenPresenceResult(
+            status="off_screen",
+            confidence=0.95,
+            reason="no face detected in 100% of sampled frames",
+            face_ratio=0.0,
+            mouth_motion_score=0.0,
+            frames_sampled=8,
+        )
+        config = PipelineConfig(
+            video_url="https://ok.ru/video/248244667877",
+            target_text="My mind rebels at stagnation",
+            work_dir=tmp_path,
+            output_dir=tmp_path / "output",
+            keep_work_files=True,
+        )
+        pipeline, _ = _build_pipeline(tmp_path, config, confident_match, off_screen_result)
+
+        with caplog.at_level("WARNING"):
+            summary = pipeline.run()
+
+        assert summary.screen_status == "off_screen"
+        assert any("off_screen" in record.message for record in caplog.records)
+
+
+class TestCandidatePreviews:
+    """CLI-preview-only image data (see utils/terminal_image.py). These
+    never touch ResultStore/JSON -- FakeResultStore.calls[i][6] is always
+    the screen_presence arg, unaffected by anything tested here."""
+
+    def test_best_frame_image_always_set(self, tmp_path, confident_match):
+        config = PipelineConfig(
+            video_url="https://ok.ru/video/248244667877",
+            target_text="My mind rebels at stagnation",
+            work_dir=tmp_path,
+            output_dir=tmp_path / "output",
+        )
+        pipeline, _ = _build_pipeline(tmp_path, config, confident_match)
+
+        summary = pipeline.run()
+
+        assert summary.best_frame_image is not None
+
+    def test_previews_extracted_for_other_top_candidates(self, tmp_path, multi_candidate_match):
+        config = PipelineConfig(
+            video_url="https://ok.ru/video/248244667877",
+            target_text="My mind rebels at stagnation",
+            work_dir=tmp_path,
+            output_dir=tmp_path / "output",
+        )
+        pipeline, fakes = _build_pipeline(tmp_path, config, multi_candidate_match)
+
+        summary = pipeline.run()
+
+        # capped at DialoguePipeline._MAX_CANDIDATE_PREVIEWS (3), even
+        # though 4 other candidates cleared the threshold
+        assert len(summary.candidate_previews) == DialoguePipeline._MAX_CANDIDATE_PREVIEWS
+        texts = [text for text, _score, _image in summary.candidate_previews]
+        assert texts == ["my mind rebels at stagnation (1)", "my mind rebels at stagnation (2)", "my mind rebels at stagnation (3)"]
+        # best (0.0s) + the 3 previewed candidates (5.0, 10.0, 15.0s)
+        assert [call[1] for call in fakes["frame_locator"].calls] == [0.0, 5.0, 10.0, 15.0]
+
+    def test_no_previews_when_only_one_candidate(self, tmp_path, confident_match):
+        config = PipelineConfig(
+            video_url="https://ok.ru/video/248244667877",
+            target_text="My mind rebels at stagnation",
+            work_dir=tmp_path,
+            output_dir=tmp_path / "output",
+        )
+        pipeline, fakes = _build_pipeline(tmp_path, config, confident_match)
+
+        summary = pipeline.run()
+
+        assert summary.candidate_previews == ()
+        # only the winning frame was ever located
+        assert len(fakes["frame_locator"].calls) == 1
+
+    def test_no_previews_extracted_when_show_images_disabled(self, tmp_path, multi_candidate_match):
+        config = PipelineConfig(
+            video_url="https://ok.ru/video/248244667877",
+            target_text="My mind rebels at stagnation",
+            work_dir=tmp_path,
+            output_dir=tmp_path / "output",
+            show_images=False,
+        )
+        pipeline, fakes = _build_pipeline(tmp_path, config, multi_candidate_match)
+
+        summary = pipeline.run()
+
+        assert summary.candidate_previews == ()
+        # show_images=False skips the extra seeks entirely -- only the
+        # winning frame is located, not a wasted-then-discarded set of previews
+        assert len(fakes["frame_locator"].calls) == 1
+        # the winning frame's own image is still always available
+        assert summary.best_frame_image is not None
+
+    def test_a_failed_preview_extraction_is_skipped_not_fatal(self, tmp_path, multi_candidate_match):
+        config = PipelineConfig(
+            video_url="https://ok.ru/video/248244667877",
+            target_text="My mind rebels at stagnation",
+            work_dir=tmp_path,
+            output_dir=tmp_path / "output",
+        )
+        # the second candidate's preview seek fails; the search must still
+        # succeed with the other previews intact
+        pipeline, _ = _build_pipeline(
+            tmp_path, config, multi_candidate_match, frame_locator_raise_at={5.0}
+        )
+
+        summary = pipeline.run()
+
+        texts = [text for text, _score, _image in summary.candidate_previews]
+        assert "my mind rebels at stagnation (1)" not in texts
+        assert "my mind rebels at stagnation (2)" in texts
+        assert "my mind rebels at stagnation (3)" in texts

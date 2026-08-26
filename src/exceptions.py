@@ -32,5 +32,12 @@ class FrameExtractionError(PipelineError):
     """Raised when the target frame could not be read from the video (stage 5)."""
 
 
+class ScreenPresenceError(PipelineError):
+    """Raised when on-screen speaker verification cannot run at all (stage 6)
+    -- e.g. the video file can't be opened. NOT the same as an inconclusive
+    verdict, which is a normal ScreenPresenceResult with status="uncertain"
+    (see screen_presence/base.py); that case is never an exception."""
+
+
 class ResultPersistenceError(PipelineError):
-    """Raised when the final result could not be written to disk (stage 6)."""
+    """Raised when the final result could not be written to disk (stage 7)."""

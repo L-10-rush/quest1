@@ -91,6 +91,9 @@ class TestConfigFromArgs:
         assert config.output_dir == Path("output")
         assert config.keep_work_files is False
         assert config.verbose is False
+        assert config.verify_screen_presence is True
+        assert config.show_images is True
+        assert config.image_width == 60
 
     def test_language_flag_is_demonstrably_swappable(self):
         """The exit criterion from approach.md Sprint 3: changing
@@ -128,6 +131,24 @@ class TestConfigFromArgs:
     def test_verbose_flag(self):
         assert config_from_args(MIN_ARGS).verbose is False
         assert config_from_args([*MIN_ARGS, "--verbose"]).verbose is True
+
+    def test_screen_verification_on_by_default_and_disableable(self):
+        assert config_from_args(MIN_ARGS).verify_screen_presence is True
+        assert (
+            config_from_args([*MIN_ARGS, "--no-screen-verification"]).verify_screen_presence is False
+        )
+
+    def test_images_on_by_default_and_disableable(self):
+        assert config_from_args(MIN_ARGS).show_images is True
+        assert config_from_args([*MIN_ARGS, "--no-images"]).show_images is False
+
+    def test_image_width_flag_parsed_as_int(self):
+        config = config_from_args([*MIN_ARGS, "--image-width", "40"])
+        assert config.image_width == 40
+
+    def test_non_positive_image_width_raises_value_error(self):
+        with pytest.raises(ValueError, match="image_width"):
+            config_from_args([*MIN_ARGS, "--image-width", "0"])
 
     def test_work_dir_and_output_dir_flags(self):
         config = config_from_args(

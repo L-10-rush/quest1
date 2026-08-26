@@ -32,6 +32,7 @@ from src.ingestion.base import VideoMetadata
 from src.matching.base import MatchResult
 from src.metrics.transcript_metrics import TranscriptMetrics
 from src.output.base import ResultStore
+from src.screen_presence.base import ScreenPresenceResult
 from src.transcription.base import TranscriptResult
 from src.utils.timestamp import format_timestamp
 
@@ -52,6 +53,7 @@ class JsonResultStore(ResultStore):
         frame: FrameResult,
         metrics: TranscriptMetrics,
         transcript: TranscriptResult,
+        screen_presence: ScreenPresenceResult | None,
     ) -> Path:
         if match.best is None:
             raise ResultPersistenceError(
@@ -75,7 +77,7 @@ class JsonResultStore(ResultStore):
 
             result_path = results_dir / f"result_{frame.frame_number}.json"
             payload = self._build_payload(
-                video, target_text, match, frame, metrics, transcript, image_path
+                video, target_text, match, frame, metrics, transcript, screen_presence, image_path
             )
             result_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
         except OSError as exc:
@@ -106,6 +108,7 @@ class JsonResultStore(ResultStore):
         frame: FrameResult,
         metrics: TranscriptMetrics,
         transcript: TranscriptResult,
+        screen_presence: ScreenPresenceResult | None,
         image_path: Path,
     ) -> dict:
         best = match.best
@@ -120,6 +123,11 @@ class JsonResultStore(ResultStore):
                 "is_uncertain": match.is_uncertain,
                 "uncertainty_reason": match.uncertainty_reason,
                 "frame_image_path": str(image_path),
+                # Answers the literal "on-screen dialogue" reading: was the
+                # speaker visibly on camera, not just present somewhere in
+                # the audio. `None` when --no-screen-verification skipped
+                # stage 6, rather than a fabricated verdict.
+                "screen_presence": self._screen_presence_to_dict(screen_presence),
             },
             "candidates": [asdict(c) for c in match.candidates],
             "transcript_metrics": asdict(metrics),
@@ -128,6 +136,19 @@ class JsonResultStore(ResultStore):
             # transcription/base.py), in chronological order.
             "transcript": [self._segment_to_dict(s) for s in transcript.segments],
             "generated_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+    @staticmethod
+    def _screen_presence_to_dict(screen_presence: ScreenPresenceResult | None) -> dict | None:
+        if screen_presence is None:
+            return None
+        return {
+            "status": screen_presence.status,
+            "confidence": round(screen_presence.confidence, 3),
+            "reason": screen_presence.reason,
+            "face_ratio": screen_presence.face_ratio,
+            "mouth_motion_score": screen_presence.mouth_motion_score,
+            "frames_sampled": screen_presence.frames_sampled,
         }
 
     @staticmethod
