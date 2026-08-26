@@ -324,3 +324,82 @@ class TestDialoguePipelineOrchestration:
         summary = pipeline.run()
 
         assert summary.total_seconds >= 0.0
+
+
+class TestPreparedSessionReuse:
+    """The interactive CLI session (main.py) calls `prepare()` once and
+    `locate_dialogue()` repeatedly against the same `PreparedSession` --
+    these prove download/extract/transcribe never re-run per search, and
+    that cleanup is a separate, explicit step rather than automatic."""
+
+    def test_prepare_runs_download_extract_transcribe_once(self, tmp_path, confident_match):
+        config = PipelineConfig(
+            video_url="https://ok.ru/video/248244667877",
+            work_dir=tmp_path,
+            output_dir=tmp_path / "output",
+            keep_work_files=True,
+        )
+        pipeline, fakes = _build_pipeline(tmp_path, config, confident_match)
+
+        session = pipeline.prepare()
+
+        assert fakes["downloader"].calls == [(config.video_url, config.work_dir)]
+        assert len(fakes["audio_extractor"].calls) == 1
+        assert len(fakes["transcriber"].calls) == 1
+        assert session.video == fakes["downloader"].video
+
+    def test_locate_dialogue_reuses_the_same_session_across_multiple_searches(
+        self, tmp_path, confident_match
+    ):
+        config = PipelineConfig(
+            video_url="https://ok.ru/video/248244667877",
+            work_dir=tmp_path,
+            output_dir=tmp_path / "output",
+            keep_work_files=True,
+        )
+        pipeline, fakes = _build_pipeline(tmp_path, config, confident_match)
+        session = pipeline.prepare()
+
+        pipeline.locate_dialogue(session, "My mind rebels at stagnation")
+        pipeline.locate_dialogue(session, "at stagnation")
+
+        # download/extract/transcribe never re-run for the second search
+        assert len(fakes["downloader"].calls) == 1
+        assert len(fakes["audio_extractor"].calls) == 1
+        assert len(fakes["transcriber"].calls) == 1
+        assert [call[1] for call in fakes["matcher"].calls] == [
+            "My mind rebels at stagnation",
+            "at stagnation",
+        ]
+        assert len(fakes["result_store"].calls) == 2
+
+    def test_cleanup_removes_work_files_only_when_explicitly_called(
+        self, tmp_path, confident_match
+    ):
+        config = PipelineConfig(
+            video_url="https://ok.ru/video/248244667877",
+            work_dir=tmp_path,
+            output_dir=tmp_path / "output",
+            keep_work_files=False,
+        )
+        pipeline, fakes = _build_pipeline(tmp_path, config, confident_match)
+        session = pipeline.prepare()
+        pipeline.locate_dialogue(session, "My mind rebels at stagnation")
+
+        assert fakes["video_file"].exists()  # cleanup() not called yet
+
+        pipeline.cleanup(session)
+
+        assert not fakes["video_file"].exists()
+        assert not fakes["audio_file"].exists()
+
+    def test_run_requires_target_text(self, tmp_path, confident_match):
+        config = PipelineConfig(
+            video_url="https://ok.ru/video/248244667877",
+            work_dir=tmp_path,
+            output_dir=tmp_path / "output",
+        )
+        pipeline, _ = _build_pipeline(tmp_path, config, confident_match)
+
+        with pytest.raises(ValueError, match="target_text"):
+            pipeline.run()

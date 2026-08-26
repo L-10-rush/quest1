@@ -74,9 +74,11 @@ class TestConfigFromArgs:
         with pytest.raises(SystemExit):
             config_from_args(["--text", "hello"])
 
-    def test_requires_text(self):
-        with pytest.raises(SystemExit):
-            config_from_args(["--url", "https://example.com/v"])
+    def test_text_defaults_to_none_when_omitted(self):
+        """`--text` is optional -- omitting it signals main.py to start an
+        interactive session instead of failing argument parsing."""
+        config = config_from_args(["--url", "https://example.com/v"])
+        assert config.target_text is None
 
     def test_defaults_applied(self):
         config = config_from_args(MIN_ARGS)

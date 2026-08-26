@@ -29,7 +29,9 @@ class PipelineConfig:
     """
 
     video_url: str
-    target_text: str
+    # None => no phrase given on the CLI, so main.py starts an interactive
+    # session instead of a single-shot search (see main.py).
+    target_text: str | None = None
     language: str = DEFAULT_LANGUAGE
     engine: str = DEFAULT_ENGINE  # "whisperx" | "vosk"
     whisper_model: str = DEFAULT_WHISPER_MODEL
@@ -44,7 +46,7 @@ class PipelineConfig:
     def __post_init__(self) -> None:
         if not self.video_url.strip():
             raise ValueError("video_url must not be empty")
-        if not self.target_text.strip():
+        if self.target_text is not None and not self.target_text.strip():
             raise ValueError("target_text must not be empty")
         if not 0 <= self.match_threshold <= 100:
             raise ValueError("match_threshold must be between 0 and 100")
@@ -68,7 +70,15 @@ def build_arg_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument("--url", required=True, help="Source video URL (e.g. YouTube, ok.ru).")
-    parser.add_argument("--text", required=True, help="Target dialogue text to locate.")
+    parser.add_argument(
+        "--text",
+        default=None,
+        help=(
+            "Target dialogue text to locate. If omitted, the video is downloaded and "
+            "transcribed once, then an interactive session prompts for dialogue lines "
+            "to search one at a time until you exit."
+        ),
+    )
     parser.add_argument(
         "--language",
         default=_env_default("LANGUAGE", DEFAULT_LANGUAGE),

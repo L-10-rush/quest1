@@ -23,7 +23,7 @@ from src.ingestion.ytdlp_downloader import YtDlpDownloader
 from src.logging_config import configure_logging
 from src.matching.fuzzy_matcher import FuzzyMatcher
 from src.output.json_store import JsonResultStore
-from src.pipeline import DialoguePipeline, PipelineRunSummary
+from src.pipeline import DialoguePipeline, PipelineRunSummary, PreparedSession
 from src.transcription.base import TranscriptionEngine
 from src.transcription.vosk_engine import VoskEngine
 from src.transcription.whisperx_engine import WhisperXEngine
@@ -65,13 +65,50 @@ def _print_summary(summary: PipelineRunSummary) -> None:
     print(f"Elapsed   : {summary.total_seconds:.1f}s")
 
 
+_EXIT_WORDS = {"exit", "quit", "q"}
+
+
+def _run_interactive_session(pipeline: DialoguePipeline, session: PreparedSession) -> None:
+    """Prompts for one dialogue line at a time and searches the already
+    -prepared session for each, looping until the user exits.
+
+    Used whenever `--text` is omitted (see config.py) -- the download +
+    transcription in `prepare()` already ran once and logged its own
+    progress; this loop only re-runs the cheap match/locate/save stages.
+    """
+    print(f'\nReady -- "{session.video.title}" downloaded and transcribed.')
+    print("Enter a line of dialogue to search for (or 'exit' to stop).\n")
+
+    while True:
+        try:
+            target_text = input("dialogue> ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            break
+
+        if not target_text:
+            continue
+        if target_text.lower() in _EXIT_WORDS:
+            break
+
+        try:
+            summary = pipeline.locate_dialogue(session, target_text)
+        except PipelineError as exc:
+            logger.error("search failed: %s", exc)
+            continue
+
+        print()
+        _print_summary(summary)
+        print()
+
+
 def main(argv: list[str] | None = None) -> int:
     config = config_from_args(argv)
     configure_logging(config.verbose)
 
     try:
         pipeline = build_pipeline(config)
-        summary = pipeline.run()
+        session = pipeline.prepare()
     except PipelineError as exc:
         logger.error("pipeline failed: %s", exc)
         return 1
@@ -81,7 +118,19 @@ def main(argv: list[str] | None = None) -> int:
         logger.error("not yet implemented: %s", exc)
         return 2
 
-    _print_summary(summary)
+    try:
+        if config.target_text:
+            # Previous single-shot behavior: one search, then exit.
+            summary = pipeline.locate_dialogue(session, config.target_text)
+            _print_summary(summary)
+        else:
+            _run_interactive_session(pipeline, session)
+    except PipelineError as exc:
+        logger.error("pipeline failed: %s", exc)
+        return 1
+    finally:
+        pipeline.cleanup(session)
+
     return 0
 
 

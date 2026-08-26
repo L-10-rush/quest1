@@ -90,6 +90,9 @@ docker compose run --rm dialogue-finder \
   same way after `dialogue-finder`.
 - `docker compose run --rm dialogue-finder --help` prints usage without
   running anything.
+- Omit `--text` to drop into an [interactive session](#interactive-session-mode)
+  instead — Docker's `run` is interactive by default, so the `dialogue>`
+  prompt works the same as running natively.
 
 ### 3. Tear down
 
@@ -171,6 +174,9 @@ uv run python -m src.main \
   --url "https://ok.ru/video/248244667877" \
   --text "My mind rebels at stagnation"
 ```
+
+Omit `--text` to search the same video for several lines in one go —
+see [Interactive session mode](#interactive-session-mode) below.
 
 `uv run` executes inside the project's `.venv` automatically — no manual
 `source .venv/bin/activate` needed (though that still works if you prefer
@@ -263,7 +269,7 @@ uv run ruff check .
 | Flag | Default | Description |
 |---|---|---|
 | `--url` | *(required)* | Source video URL. |
-| `--text` | *(required)* | Target dialogue text to locate. |
+| `--text` | *(optional)* | Target dialogue text to locate. Omit it to start an [interactive session](#interactive-session-mode) instead of a single search. |
 | `--language` | `en` | ISO-639-1 language code for ASR. |
 | `--engine` | `whisperx` | `whisperx` or `vosk`. |
 | `--whisper-model` | `small` | `tiny`\|`base`\|`small`\|`medium`\|`large-v3`. |
@@ -274,6 +280,64 @@ uv run ruff check .
 | `--output-dir` | `output` | Where `result.json` + `frames/` are written. |
 | `--keep-work-files` | off | Don't delete downloaded video/audio after the run. |
 | `--verbose` | off | Debug-level logging. |
+
+---
+
+## Interactive session mode
+
+Run without `--text` and the CLI treats the URL as a **session**: it
+downloads and transcribes the video exactly once, then repeatedly prompts
+for a dialogue line, searches the already-transcribed session for it, prints
+the result, and writes it to `output/` — looping until you exit. Useful for
+checking several lines from the same video without re-downloading or
+re-transcribing each time.
+
+```bash
+uv run python -m src.main --url "https://ok.ru/video/248244667877"
+```
+
+```
+12:03:10 | INFO     | [1/4] downloading video: https://ok.ru/video/248244667877
+12:03:41 | INFO     | [2/4] extracting audio
+12:03:42 | INFO     | [3/4] transcribing (whisperx, model=small)
+12:04:05 | INFO     | [4/4] computing transcript metrics
+
+Ready -- "Fight Club (1999) - I Am Jack's...  Clip" downloaded and transcribed.
+Enter a line of dialogue to search for (or 'exit' to stop).
+
+dialogue> My mind rebels at stagnation
+12:04:12 | INFO     | [5/6] matching target phrase: 'My mind rebels at stagnation'
+12:04:12 | INFO     | [6/6] locating and saving frame at 42.360s
+
+Timestamp : 00:00:42.360
+Frame     : 1059
+Text      : "My mind rebels at stagnation"
+Score     : 96.5
+Image     : output/248244667877/frames/frame_1059.png
+JSON      : output/248244667877/results/result_1059.json
+Elapsed   : 0.4s
+
+dialogue> a second dialogue line
+...
+dialogue> exit
+```
+
+Notes:
+
+- Each line you enter gets its own `result_<frame_number>.json` and
+  `frame_<frame_number>.png` under the same `output/<video_id>/` folder (see
+  [Output layout](#output-layout)) — nothing from an earlier search in the
+  session is overwritten.
+- A search that doesn't match anything confidently still prints a result
+  flagged `UNCERTAIN` rather than crashing the session (see `approach.md`
+  §7) — you just keep going.
+- If a single search fails outright (e.g. a disk error writing the result),
+  the error is logged and the loop keeps prompting rather than exiting.
+- Downloaded video/audio in `--work-dir` are cleaned up once, when the
+  session ends (`exit`/`quit`/Ctrl-D), not after every line — unless
+  `--keep-work-files` is set.
+- Passing both `--url` and `--text` skips all of this and runs the single
+  search + exit behavior described above, unchanged.
 
 ---
 
