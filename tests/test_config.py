@@ -94,6 +94,7 @@ class TestConfigFromArgs:
         assert config.verify_screen_presence is True
         assert config.show_images is True
         assert config.image_width == 60
+        assert config.save_session_log is True
 
     def test_language_flag_is_demonstrably_swappable(self):
         """The exit criterion from approach.md Sprint 3: changing
@@ -149,6 +150,10 @@ class TestConfigFromArgs:
     def test_non_positive_image_width_raises_value_error(self):
         with pytest.raises(ValueError, match="image_width"):
             config_from_args([*MIN_ARGS, "--image-width", "0"])
+
+    def test_session_log_on_by_default_and_disableable(self):
+        assert config_from_args(MIN_ARGS).save_session_log is True
+        assert config_from_args([*MIN_ARGS, "--no-session-log"]).save_session_log is False
 
     def test_work_dir_and_output_dir_flags(self):
         config = config_from_args(

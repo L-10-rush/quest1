@@ -31,8 +31,20 @@ MIN_ARGS = ["--url", "https://ok.ru/video/248244667877", "--text", "My mind rebe
 URL_ONLY_ARGS = ["--url", "https://ok.ru/video/248244667877"]
 
 FAKE_SESSION = PreparedSession(
-    video=SimpleNamespace(title="Test Video"), audio=None, transcript=None, metrics=None
+    video=SimpleNamespace(title="Test Video", video_id="248244667877"),
+    audio=None,
+    transcript=None,
+    metrics=None,
 )
+
+
+@pytest.fixture(autouse=True)
+def _isolate_cwd(tmp_path, monkeypatch):
+    """main() now writes a real session.log file (see _append_session_log)
+    even though build_pipeline/the pipeline itself is mocked out -- run
+    every test from a throwaway directory so that write (and the default
+    relative --output-dir it lands under) never touches the real repo."""
+    monkeypatch.chdir(tmp_path)
 
 
 class _FakePipeline:
@@ -375,3 +387,72 @@ class TestPrintSummaryImages:
         main_module.main([*MIN_ARGS, "--no-images"])
 
         assert "\033[38;2;" not in capsys.readouterr().out
+
+
+class TestSessionLog:
+    """A plain-text, human-readable record of every search against a video,
+    appended to output/<video_id>/session.log -- separate from the
+    per-search result_<frame>.json (JsonResultStore) and from the
+    terminal-only image previews."""
+
+    def test_appends_a_readable_record_after_a_single_shot_search(self, monkeypatch, tmp_path):
+        _stub_build_pipeline(monkeypatch, locate_outcomes=[SUCCESS_SUMMARY])
+
+        main_module.main([*MIN_ARGS, "--output-dir", str(tmp_path / "out")])
+
+        log_path = tmp_path / "out" / "248244667877" / "session.log"
+        assert log_path.exists()
+        content = log_path.read_text()
+        assert 'Query: "My mind rebels at stagnation"' in content
+        assert "Timestamp : 00:00:42.360" in content
+        assert "Frame     : 1059" in content
+
+    def test_appends_one_entry_per_interactive_query_not_overwriting(self, monkeypatch, tmp_path):
+        first = SUCCESS_SUMMARY
+        second = PipelineRunSummary(
+            timestamp="00:01:00.000", frame_number=1500, matched_text="a second line",
+            match_score=90.0, is_uncertain=False, uncertainty_reason=None,
+            result_json_path="output/x/results/result_1500.json",
+            frame_image_path="output/x/frames/frame_1500.png", total_seconds=0.5,
+        )
+        _stub_build_pipeline(monkeypatch, locate_outcomes=[first, second])
+        answers = iter(["first query", "second query", "exit"])
+        monkeypatch.setattr("builtins.input", lambda *_: next(answers))
+
+        main_module.main([*URL_ONLY_ARGS, "--output-dir", str(tmp_path / "out")])
+
+        log_path = tmp_path / "out" / "248244667877" / "session.log"
+        content = log_path.read_text()
+        assert 'Query: "first query"' in content
+        assert 'Query: "second query"' in content
+        # both entries present, in order -- second appended after first, not overwriting it
+        assert content.index('Query: "first query"') < content.index('Query: "second query"')
+
+    def test_no_session_log_flag_skips_the_file_entirely(self, monkeypatch, tmp_path):
+        _stub_build_pipeline(monkeypatch, locate_outcomes=[SUCCESS_SUMMARY])
+
+        main_module.main([*MIN_ARGS, "--output-dir", str(tmp_path / "out"), "--no-session-log"])
+
+        assert not (tmp_path / "out" / "248244667877" / "session.log").exists()
+
+    def test_log_line_printed_when_logging_enabled(self, monkeypatch, capsys, tmp_path):
+        _stub_build_pipeline(monkeypatch, locate_outcomes=[SUCCESS_SUMMARY])
+
+        main_module.main([*MIN_ARGS, "--output-dir", str(tmp_path / "out")])
+
+        out = capsys.readouterr().out
+        assert f"Log       : {tmp_path / 'out' / '248244667877' / 'session.log'}" in out
+
+    def test_no_log_line_when_logging_disabled(self, monkeypatch, capsys, tmp_path):
+        _stub_build_pipeline(monkeypatch, locate_outcomes=[SUCCESS_SUMMARY])
+
+        main_module.main([*MIN_ARGS, "--output-dir", str(tmp_path / "out"), "--no-session-log"])
+
+        assert "Log       :" not in capsys.readouterr().out
+
+    def test_a_failed_search_writes_no_log_entry(self, monkeypatch, tmp_path):
+        _stub_build_pipeline(monkeypatch, locate_outcomes=[ResultPersistenceError("disk full")])
+
+        main_module.main([*MIN_ARGS, "--output-dir", str(tmp_path / "out")])
+
+        assert not (tmp_path / "out" / "248244667877" / "session.log").exists()

@@ -97,6 +97,9 @@ sample transcript.
   just a file path (`--no-images` to opt out).
 - Persist every result as JSON + PNG, keyed per video, without overwriting
   an earlier search against the same video.
+- Append a plain-text, human-readable record of every search (query,
+  timestamp, frame, score, on-screen verdict) to a running per-video log,
+  independent of the machine-shaped JSON (`--no-session-log` to opt out).
 - Surface every line of dialogue spoken in the video (the full transcript),
   not only the phrase that was searched for.
 - Report a clear, structured result — never crash silently — when nothing

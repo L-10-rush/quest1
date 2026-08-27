@@ -53,6 +53,11 @@ class PipelineConfig:
     # dumping raw ANSI escapes into a redirected/piped output.
     show_images: bool = True
     image_width: int = 60
+    # Plain-text, human-readable record of every search against this video,
+    # appended to output/<video_id>/session.log after each one -- separate
+    # from the per-search result_<frame>.json (see output/json_store.py)
+    # and from the terminal-only image previews above.
+    save_session_log: bool = True
 
     def __post_init__(self) -> None:
         if not self.video_url.strip():
@@ -166,6 +171,16 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=60,
         help="Terminal columns wide for inline frame previews (default: 60).",
     )
+    parser.add_argument(
+        "--no-session-log",
+        action="store_false",
+        dest="save_session_log",
+        default=True,
+        help=(
+            "Don't append a plain-text record of each search to "
+            "output/<video_id>/session.log."
+        ),
+    )
     parser.add_argument("--verbose", action="store_true", help="Enable debug-level logging.")
     return parser
 
@@ -189,4 +204,5 @@ def config_from_args(argv: list[str] | None = None) -> PipelineConfig:
         verify_screen_presence=args.verify_screen_presence,
         show_images=args.show_images,
         image_width=args.image_width,
+        save_session_log=args.save_session_log,
     )

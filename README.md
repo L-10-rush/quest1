@@ -431,6 +431,7 @@ uv run ruff check .
 | `--no-screen-verification` | off | Skip stage 6 (on-screen speaker verification) — only report where the line was said. |
 | `--no-images` | off | Don't render frame previews inline in the terminal (see [Terminal previews](#terminal-previews)). |
 | `--image-width` | `60` | Terminal columns wide for inline frame previews. |
+| `--no-session-log` | off | Don't append each search to `output/<video_id>/session.log`. |
 | `--work-dir` | `work` | Scratch dir for downloaded video / extracted audio. |
 | `--output-dir` | `output` | Where `result.json` + `frames/` are written. |
 | `--keep-work-files` | off | Don't delete downloaded video/audio after the run. |
@@ -546,6 +547,7 @@ with a different `--text` reuses the same folder instead of re-downloading:
 output/
 └── <video_id>/
     ├── <video_id>.meta.json        # video-level metadata, written once
+    ├── session.log                 # plain-text record of every search, appended (--no-session-log to disable)
     ├── frames/
     │   └── frame_<frame_number>.png
     └── results/
@@ -561,6 +563,12 @@ stats, words-per-minute), and a `"transcript"` array — every line of dialogue
 spoken anywhere in the video (not just the matched target phrase), each
 with its own text, start/end timestamp, and confidence, in chronological
 order — see `approach.md` §4.1 for the full schema and rationale.
+
+`session.log` is the plain-text counterpart: one human-readable block per
+search (query, timestamp, frame, score, on-screen verdict, elapsed time),
+appended after every search — both single-shot and interactive — across
+every run against this video, so there's a readable history even without
+opening any of the JSON files. `--no-session-log` turns it off.
 
 ---
 
