@@ -61,7 +61,7 @@ the speaking character being visibly on camera, as opposed to voice-over or
 off-screen narration. The pipeline answers the second reading too — stage 6
 verifies it with a self-contained OpenCV heuristic (face detection + mouth
 motion), no external API or hosted model required. See
-[approach.md](approach.md) for the full reasoning.
+[Approach.md](Approach.md) for the full reasoning.
 
 ## Demo
 
