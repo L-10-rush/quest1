@@ -1,119 +1,10 @@
 # video-dialogue-finder
 
-Given a video URL and a target line of spoken dialogue, this program finds the
-exact video frame where that line is spoken and reports its timestamp, frame
-number, matched text, a saved image of that frame, and whether the speaker
-was actually visible on camera saying it. If no target line is given, it
-starts an interactive session instead: transcribe the video once, then search
-it for as many lines as you want, one after another.
-
-This was built for a technical assignment requiring exactly this — work
-against an arbitrary public video URL without manual inspection, and
-generalize to a different video or target line at evaluation time.
-
-## Contents
-
-- [Overview](#overview)
-- [Demo](#demo)
-- [Key Features](#key-features)
-- [How It Works](#how-it-works)
-- [Tech stack](#tech-stack)
-- [Project structure](#project-structure)
-- [Prerequisites](#prerequisites)
-- [Option A — Docker (recommended)](#option-a-docker-recommended)
-- [Option B — Native, with uv](#option-b-native-with-uv)
-- [CLI reference](#cli-reference)
-- [Interactive session mode](#interactive-session-mode)
-- [Terminal previews](#terminal-previews)
-- [Output layout](#output-layout)
-- [End-to-end verification](#end-to-end-verification)
-- [Potential Applications](#potential-applications)
-- [Documentation](#documentation)
-- [Known Limitations and Future Scope](#known-limitations-and-future-scope)
-- [Troubleshooting](#troubleshooting)
-- [Author](#author)
-- [Acknowledgments](#acknowledgments)
-
----
-
-## Overview
-
-The dialogue in the target video isn't captioned or burned into the frame —
-it only exists in the audio track. That rules out OCR as the core mechanism
-and points straight at speech-to-text with word-level timestamps: transcribe
-the audio, find the phrase in the transcript, convert its timestamp to a
-frame number.
-
-One video is transcribed once and can then be searched as many times as
-needed — that single design choice is why the CLI supports two modes off the
-same pipeline:
-
-- **Single search** — `--url` + `--text` given together: one search, one
-  result, then exit. The classic one-shot CLI behavior.
-- **Interactive session** — `--url` only: the video is downloaded and
-  transcribed exactly once, then the CLI repeatedly prompts for a dialogue
-  line, searches the already-transcribed session for it, and loops until you
-  exit. See [Interactive session mode](#interactive-session-mode).
-
-"On-screen dialogue" has two readings: captioned text burned into the frame
-(ruled out — this project targets audio-only dialogue with no captions), and
-the speaking character being visibly on camera, as opposed to voice-over or
-off-screen narration. The pipeline answers the second reading too — stage 6
-verifies it with a self-contained OpenCV heuristic (face detection + mouth
-motion), no external API or hosted model required. See
-[Approach.md](Approach.md) for the full reasoning.
-
-## Demo
-
-**[Demo recording — Google Drive](https://drive.google.com/drive/folders/1JkGIC9JCMdgSLA2FZm255Zz7wxDQabgs?usp=drive_link)**
-
-A recorded run of the CLI against a real video URL, producing a timestamp,
-frame number, and saved frame image.
-
-### Example
-
-```
-Timestamp : 00:00:42.360
-Frame     : 1059
-Text      : "My mind rebels at stagnation"
-Score     : 96.5
-Image     : output/248244667877/frames/frame_1059.png
-JSON      : output/248244667877/results/result_1059.json
-```
-
-## Key Features
-
-- Word-level dialogue localization via WhisperX (faster-whisper + wav2vec2
-  forced alignment) — sub-100ms word timestamps, not just segment-level ones
-- Fuzzy phrase matching (RapidFuzz) tolerant of ASR transcription noise, with
-  a documented, never-silent uncertainty contract: a low-confidence match is
-  still returned, flagged, and explained rather than dropped
-- SQLite-backed video registry — a repeat run against the same URL skips the
-  download entirely and reuses the cached file
-- An interactive multi-query session — transcribe a video once, then search
-  it for as many dialogue lines as you want, no re-downloading or
-  re-transcribing per line
-- A full transcript of every line spoken in the video (not just the matched
-  phrase) persisted alongside each result, with word-count/confidence metrics
-- A pluggable transcription engine (WhisperX by default, Vosk as a
-  lightweight fallback) behind one interface, swappable with a single CLI flag
-- On-screen speaker verification (stage 6) — answers the more literal
-  "on-screen dialogue" question: was the speaker visibly on camera saying
-  the line, not just present somewhere in the audio. A self-contained
-  OpenCV face-detection + mouth-motion heuristic, no API key or hosted
-  service required (skippable with `--no-screen-verification`)
-- Inline terminal frame previews — the matched frame (and, when a search is
-  ambiguous, the other top candidates) rendered directly in the terminal in
-  color, no image viewer or special terminal required (see
-  [Terminal previews](#terminal-previews))
-- SOLID, interface-driven architecture — every stage is one class behind one
-  abstract interface, wired together in a single composition root
-- Dockerized, `uv`-managed dependency pinning (CPU-only torch wheels,
-  reproducible lockfile) for a build that doesn't drift between machines
-- 197 tests, mocked at each library boundary, running in a few seconds with
-  no network access required
-
-## How It Works
+Given a video URL and a line of dialogue, finds the exact frame where that
+line is spoken — timestamp, frame number, matched text, a saved frame
+image, and whether the speaker was actually visible on camera saying it —
+via speech-to-text + fuzzy phrase matching, with both a CLI and an optional
+[Streamlit web UI](#web-ui-streamlit).
 
 ```mermaid
 flowchart LR
@@ -151,6 +42,7 @@ alternatives considered and why they were rejected — are documented in
 | Frame extraction | [OpenCV](https://opencv.org/) (`opencv-python-headless`) |
 | On-screen verification | OpenCV Haar cascade face detection + mouth-motion heuristic (self-contained, no API key) |
 | Output | JSON (`stdlib json`) + PNG frame image |
+| Web UI (optional) | [Streamlit](https://streamlit.io/) — thin front end over the same pipeline, see [Web UI](#web-ui-streamlit) |
 | Testing | pytest, pytest-cov |
 | Linting | ruff |
 | Containerization | Docker (multi-stage, `uv`-based build), Docker Compose |
@@ -179,7 +71,8 @@ alternatives considered and why they were rejected — are documented in
 │   ├── frame_locator/         # stage 5: OpenCV seek + extract
 │   ├── screen_presence/        # stage 6: on-screen speaker verification
 │   ├── metrics/                  # transcript word/confidence metrics
-│   └── output/                    # stage 7: JSON + image persistence
+│   ├── output/                    # stage 7: JSON + image persistence
+│   └── webapp/                     # optional Streamlit UI (see Web UI below)
 ├── tests/
 ├── work/                     # scratch: downloaded video/audio (gitignored)
 └── output/                   # result.json + frame images (gitignored)
@@ -342,11 +235,7 @@ an activated shell for a longer session).
 > this cost. `WhisperXEngine` is hardcoded to WhisperX's Silero VAD backend
 > specifically because it needs no HuggingFace account/token, unlike
 > WhisperX's other VAD backend (pyannote) — matching the problem
-> statement's "works without manual setup" requirement. Verified
-> end-to-end against real synthesized speech:
-> a `small`-model run transcribed a test clip of "My mind rebels at
-> stagnation" with a 98.2 fuzzy-match score and correct word-level
-> timestamps in ~60s (after the one-time model download).
+> statement's "works without manual setup" requirement.
 
 ### 5. Run the tests
 
@@ -382,12 +271,6 @@ runs in a few seconds:
 | `test_timestamp.py` | `format_timestamp` / `seconds_to_frame_number` | `HH:MM:SS.sss` formatting/rounding, timestamp → frame mapping |
 | `test_video_id.py` | `extract_video_id` | ok.ru / YouTube URL parsing, stable-hash fallback for unknown platforms |
 
-Every pipeline stage is implemented and unit-tested — there's no more
-"scaffold checklist" file. Beyond the mocked unit suite above, the full
-pipeline (audio extraction → transcription → matching → frame extraction →
-persistence) has also been run for real, end-to-end, against synthesized
-speech audio — see [Sprint 4 / End-to-end verification](#end-to-end-verification) below.
-
 Run a single file, a single class, or a single test:
 
 ```bash
@@ -416,6 +299,53 @@ uv run ruff check .
 
 ---
 
+## Web UI (Streamlit)
+
+A browser front end over the exact same pipeline the CLI uses (reuses
+`build_pipeline()`/`append_session_log()` from `src/main.py`, see
+`Approch.md` §9.1) — and the only place frame images are shown, since the
+CLI (below) prints text only.
+
+### 1. Install the web UI
+
+```bash
+uv sync --group web
+```
+
+Optional dependency group, not part of the default install or the Docker
+image — same "keep it lean" reasoning as the CPU-only torch pin.
+
+### 2. Launch it
+
+```bash
+uv run streamlit run src/webapp/app.py
+```
+
+Opens at `http://localhost:8501`.
+
+### 3. Load a video
+
+Enter a URL in the sidebar (optionally tweak language, engine, model,
+threshold, on-screen verification, session log) and click **Load video** —
+runs the download/transcribe stages (1–4) once.
+
+### 4. Search for dialogue
+
+Type a line and click **Search**, as many times as you want — reuses the
+loaded session (stages 5–7 only), same as the CLI's [interactive session
+mode](#interactive-session-mode).
+
+### 5. View the result
+
+The matched frame — and, when a search is ambiguous, the other
+top-scoring candidates — renders as a real image, alongside the
+timestamp, frame number, score, on-screen verdict, and download buttons
+for the frame PNG / result JSON. Every search is still appended to
+`output/<video_id>/session.log` (see [Output layout](#output-layout)).
+Click **🔄 New video / reset** to start over with a different URL.
+
+---
+
 ## CLI reference
 
 | Flag | Default | Description |
@@ -429,8 +359,6 @@ uv run ruff check .
 | `--match-threshold` | `80` | Minimum fuzzy-match score (0–100) to be considered confident. |
 | `--window-size` | auto | Sliding-window width in words; defaults to the word count of `--text`. |
 | `--no-screen-verification` | off | Skip stage 6 (on-screen speaker verification) — only report where the line was said. |
-| `--no-images` | off | Don't render frame previews inline in the terminal (see [Terminal previews](#terminal-previews)). |
-| `--image-width` | `60` | Terminal columns wide for inline frame previews. |
 | `--no-session-log` | off | Don't append each search to `output/<video_id>/session.log`. |
 | `--work-dir` | `work` | Scratch dir for downloaded video / extracted audio. |
 | `--output-dir` | `output` | Where `result.json` + `frames/` are written. |
@@ -499,44 +427,6 @@ Notes:
 
 ---
 
-## Terminal previews
-
-Every result is printed with an inline preview of the matched frame,
-rendered directly in the terminal with 24-bit-color half-block characters —
-no image viewer, no image-protocol-specific terminal (Kitty/iTerm2/Sixel)
-required, works over plain SSH too. When the match is ambiguous (more than
-one candidate span cleared the threshold), the CLI also previews up to 3
-other top-scoring candidates side by side with their scores, so you can
-visually pick the right one instead of guessing from text alone:
-
-```
-Timestamp : 00:00:42.360
-...
-OnScreen  : ON_SCREEN (confidence 0.90) -- ...
-
-▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀   (the matched frame, in color)
-▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
-
-Other candidates (2, for ambiguity review):
-  score=91.0  "my mind rebels, at stagnation"
-  ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
-  ...
-```
-
-- On by default, and automatically skipped when stdout isn't a real
-  terminal (piped to a file, redirected in CI) — never dumps raw ANSI
-  escape codes into a log. `--no-images` opts out explicitly even on a
-  real terminal; `--image-width` controls how wide the preview renders
-  (default 60 columns).
-- Candidate previews are extracted only when there's genuine ambiguity
-  (more than one candidate cleared the threshold) and only when previews
-  are enabled — a single confident match never pays for the extra seeks.
-- Preview images are CLI-only and not written to disk or persisted in the
-  result JSON; the saved `frame_<n>.png` (winning match only, see
-  [Output layout](#output-layout)) remains the actual deliverable.
-
----
-
 ## Output layout
 
 Results are keyed per video ID (parsed from the URL, or a stable hash
@@ -569,60 +459,6 @@ search (query, timestamp, frame, score, on-screen verdict, elapsed time),
 appended after every search — both single-shot and interactive — across
 every run against this video, so there's a readable history even without
 opening any of the JSON files. `--no-session-log` turns it off.
-
----
-
-## End-to-end verification
-
-`ok.ru` is unreachable from some sandboxed/CI network environments
-(connection reset on the TLS handshake) — that's a network-egress
-limitation of the environment, not a bug in `YtDlpDownloader` (which is
-unit-tested against a mocked yt-dlp boundary and works against any URL
-yt-dlp itself supports). To still prove the rest of the pipeline for real
-rather than only against mocks, every stage was run end-to-end against
-real, synthesized speech audio (`espeak-ng` speaking the target line,
-muxed into a small video with `ffmpeg`) using the actual, unmocked
-`FfmpegAudioExtractor`, `WhisperXEngine`, `FuzzyMatcher`,
-`OpenCvFrameLocator`, `OpenCvScreenPresenceDetector`, and `JsonResultStore`:
-
-```
-[2/7] extracting audio (real ffmpeg)...
-      -> smoke.wav, 2.01s, 16000Hz
-[3/7] transcribing (real WhisperX, model=small, cpu)...
-      -> 5 words
-         0.03-0.18  'my'    conf=0.85
-         0.22-0.46  'mind'  conf=0.90
-         0.52-0.78  'rebels' conf=0.79
-         0.87-0.93  'at'    conf=0.90
-         1.01-1.68  'stagnation.' conf=0.91
-[5/7] matching target phrase...
-      -> matched_text='my mind rebels at stagnation.' score=98.2 start=0.034s is_uncertain=False
-[6/7] locating frame (real OpenCV)...
-[7/7] verifying on-screen presence (real Haar cascade)...
-      -> status=off_screen confidence=1.0 face_ratio=0.0 frames_sampled=7
-
-Timestamp : 00:00:00.034
-Frame     : 0
-Text      : "my mind rebels at stagnation."
-Score     : 98.2
-OnScreen  : OFF_SCREEN
-```
-
-That `off_screen` result is honest, not a limitation being glossed over:
-the synthesized clip is a plain black frame with no face in it, so
-`off_screen` is the *correct* verdict — this run demonstrates the heuristic
-doesn't false-positive on a faceless video, not that it can find a real
-face (no labeled face-containing test video was available in this
-environment to demonstrate a true `on_screen` positive).
-
-Confirms, against real (not mocked) execution: ffmpeg audio extraction,
-WhisperX transcription with correct word-level timestamps, the fuzzy
-matcher correctly locating the phrase with a 98.2 score, frame extraction,
-and a correctly-shaped saved result. A second run against the `tiny`
-model (intentionally a worse model for this synthetic robotic voice)
-mis-transcribed a couple of words and — as designed — the matcher scored
-it low and returned `is_uncertain: true` with a reason, rather than a
-silently wrong confident answer.
 
 ---
 

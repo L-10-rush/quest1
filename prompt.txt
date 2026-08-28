@@ -132,3 +132,249 @@ MODEL    : Claude code
 PROMPT   : Fix the Runing issues  with this - uv run python -m src.main \
   --url "https://ok.ru/video/248244667877" \
   --text "My mind rebels at stagnation"
+
+--------------------------------------------------------------------------------
+NOTE — Format upgrade
+--------------------------------------------------------------------------------
+Everything below this line is logged as an engineered prompt rather than a
+pasted chat message: GOAL states the outcome wanted, CONSTRAINTS states the
+non-negotiables the solution had to respect, and PROMPT is the cleaned-up
+instruction actually given to the model. The intent is for this file to
+double as a reusable spec, not just a chat transcript.
+
+--------------------------------------------------------------------------------
+S7 — Interactive multi-query CLI session
+--------------------------------------------------------------------------------
+[S7-01]
+MODEL      : Claude Code
+CONTEXT    : Every search re-ran ingestion + transcription from scratch, even
+             for a second dialogue line against a video already downloaded
+             and transcribed in the same run.
+GOAL       : Let one video be searched for many dialogue lines without
+             re-downloading or re-transcribing between searches.
+CONSTRAINTS:
+  - `--text` must keep working exactly as before (single search, then exit)
+    for anyone scripting the CLI.
+  - The expensive stages (download, extract, transcribe) must run exactly
+    once per video regardless of how many lines get searched.
+PROMPT     : "Split the pipeline into a `prepare()` step (download, extract,
+             transcribe -- runs once) and a `locate_dialogue()` step (match,
+             locate, verify, save -- runs per query). When `--text` is
+             omitted, loop on a `dialogue>` prompt calling `locate_dialogue()`
+             against the same prepared session until the user types
+             exit/quit/Ctrl-D, then clean up the downloaded video/audio."
+OUTCOME    : `PreparedSession` + `DialoguePipeline.prepare()` /
+             `locate_dialogue()` / `cleanup()`; `main.py`'s
+             `_run_interactive_session()` loop. Landed in 85a4599.
+
+--------------------------------------------------------------------------------
+S8 — On-screen speaker verification (stage 6)
+--------------------------------------------------------------------------------
+[S8-01]
+MODEL      : Claude Code
+CONTEXT    : answered a more literal reading of
+             "on-screen dialogue": not just that the line exists somewhere
+             in the audio track, but that the speaker was visibly on camera
+             saying it.
+GOAL       : Answer that same literal reading without weakening the
+             project's zero-external-dependency stance (no hosted API key
+             or account required anywhere in the pipeline).
+CONSTRAINTS:
+  - Must slot in as a new pipeline stage behind its own ABC, same as every
+    other stage (Dependency Inversion, one interface per concern).
+  - An inconclusive verdict must be flagged with a reason, never dropped or
+    guessed at silently.
+  - Weigh a self-contained local heuristic against a more accurate but
+    externally-dependent hosted alternative (active-speaker-detection API +
+    diarization) and document the tradeoff explicitly.
+PROMPT     : "Build my project so it also answers the more literal version of
+             the question -- was the speaker actually visible on screen
+             saying the line, not just present somewhere in the audio.
+             Compare a local heuristic against a hosted active-speaker-
+             detection API, pick one, and document why."
+OUTCOME    : Chose the local heuristic (`screen_presence/opencv_detector.py`
+             -- Haar cascade face detection + mouth-motion scoring) over the
+             hosted alternative specifically to avoid external-dependency
+             risk at evaluation time; wired in as pipeline stage 6. Tradeoff
+             documented in Approch.md §7.2. Landed in b55db13.
+
+--------------------------------------------------------------------------------
+S9 — CLI UX: inline frame previews + candidate disambiguation
+--------------------------------------------------------------------------------
+[S9-01]
+MODEL      : Claude Code
+CONTEXT    : A search result was only ever a file path on disk -- no way to
+             glance at whether the matched frame actually looked right
+             without leaving the terminal, and an ambiguous match (a line
+             said more than once) gave no way to compare candidates.
+GOAL       : Make a search result visually reviewable from the terminal
+             itself, including the runner-up candidates when a match is
+             ambiguous.
+CONSTRAINTS:
+  - No new runtime dependency -- render with what's already required
+    (`cv2`/`numpy`), not an image-viewer integration.
+  - Must never dump raw escape codes into a redirected/piped/CI output.
+PROMPT     : "Make the CLI more user-friendly -- show the matched frame image
+             and the best candidate photos directly in the terminal, not
+             just a file path."
+OUTCOME    : `utils/terminal_image.py` (24-bit ANSI half-block renderer),
+             gated on `show_images` AND a real `isatty()`; pipeline extracts
+             up to 3 runner-up candidate frames on genuine ambiguity. Landed
+             in b55db13. Superseded by CLEANUP-01 below once the Streamlit
+             UI made a dedicated image surface available.
+
+--------------------------------------------------------------------------------
+DOCS — Approach document parity pass
+--------------------------------------------------------------------------------
+[DOCS-01]
+MODEL      : Claude Code
+CONTEXT    : The peer's approach document (approach_rahual.md) read as a
+             more complete, evaluator-friendly spec: numbered sections in a
+             deliberate order (Problem, Solution, Requirements, Scope,
+             Approaches Considered, Architecture, User/System Flow, Edge
+             Cases, Assumptions, Impact, Novelty, Installation...).
+GOAL       : Bring Approch.md to the same structural standard without
+             changing any of its actual technical content or conclusions.
+PROMPT     : "Update my Approch.md to follow the same structure as
+             approach_rahual.md, and number every section."
+OUTCOME    : Approch.md rewritten as 18 numbered sections mirroring that
+             topic order, with every internal `§N` cross-reference and TOC
+             anchor hand-verified against GitHub's heading-slug rules.
+
+--------------------------------------------------------------------------------
+S10 — Per-video session log
+--------------------------------------------------------------------------------
+[S10-01]
+MODEL      : Claude Code
+CONTEXT    : Every search's full detail only existed as one JSON file per
+             result -- no single human-readable place to see everything
+             ever searched for in a given video across every run.
+GOAL       : A plain-text, append-only history of every search against a
+             video, readable without opening any JSON.
+CONSTRAINTS:
+  - Must never overwrite an earlier entry -- append only.
+  - Must apply identically to a single-shot search and every iteration of
+    the interactive session loop (S7).
+  - Opt-out, not opt-in (a record by default is the useful default; a flag
+    exists for anyone who doesn't want the extra file).
+PROMPT     : "After every dialogue search, append its output to a running
+             log file for that video, in addition to the per-search JSON."
+OUTCOME    : `output/<video_id>/session.log`, `--no-session-log` to disable,
+             `main.py`'s `summary_lines()`/`append_session_log()` shared by
+             both the terminal printer and the log writer so they can never
+             drift apart. Landed in b1e2858.
+
+--------------------------------------------------------------------------------
+QA — Clone-and-run verification pass (asked repeatedly)
+--------------------------------------------------------------------------------
+[QA-01]
+MODEL      : Claude Code
+CONTEXT    : Asked three separate times across the build, each time after
+             new work had landed, as a final sanity gate before trusting the
+             repo state.
+GOAL       : An honest, freshly-checked answer -- not an assumption carried
+             over from the last time it was asked -- about whether a
+             completely fresh `git clone` of this repo, on another machine,
+             would run without error.
+PROMPT     : "If I pushed this to GitHub and asked another system to clone
+             this repo, what are the exact steps to run it without error --
+             will it actually work?"
+OUTCOME    : Re-checked `git status`/`git log`/`git remote` fresh each time
+             rather than reusing a prior answer; first time flagged nothing
+             was pushed yet, once flagged a stray peer file at risk of being
+             committed, finally confirmed clean and working with one
+             pre-existing caveat (Debian's older `patchelf` lacking
+             `--clear-execstack`, documented in the README's Troubleshooting
+             table).
+
+--------------------------------------------------------------------------------
+DEBUG — ok.ru connection reset triage
+--------------------------------------------------------------------------------
+[DEBUG-02]
+MODEL      : Claude Code
+CONTEXT    : A real `ConnectionResetError` from `ok.ru` was pasted from an
+             actual CLI run.
+GOAL       : Determine whether this was a real defect in `YtDlpDownloader`
+             or an environment/network problem outside the code's control,
+             and back up the answer with evidence rather than a guess.
+PROMPT     : "Here's the error I got running the CLI -- what is this, and
+             will the project not work?"
+OUTCOME    : Reproduced the identical `Connection reset by peer` with a
+             plain `curl` against `ok.ru` from an unrelated environment,
+             confirming a network-level block on `ok.ru`'s side, not a code
+             defect -- the pipeline's own error handling (clean
+             `DownloadError` -> exit code 1, no raw traceback) was already
+             working as designed. No code change needed; documented as a
+             known limitation.
+
+--------------------------------------------------------------------------------
+WEBUI — Streamlit front end
+--------------------------------------------------------------------------------
+[WEBUI-01]
+MODEL      : Claude Code
+CONTEXT    : The project was CLI-only; a terminal is not the easiest way for
+             every evaluator to try the tool or view a result.
+GOAL       : A minimal browser UI over the exact same pipeline the CLI
+             drives, with zero duplicated pipeline-wiring logic.
+CONSTRAINTS:
+  - `main.py` stays the single composition root -- the UI must call into
+    `build_pipeline()` from there, never wire stage implementations itself.
+  - Optional: must not become a default dependency of the CLI install or
+    the production Docker image.
+  - Same session-log contract as the CLI (S10) -- one shared writer, not a
+    second implementation.
+PROMPT     : "Help me build a simple Streamlit front end and wire it to this
+             system as its backend. Update the docs to match."
+OUTCOME    : `src/webapp/app.py` -- load a video once, search it for as many
+             lines as wanted, view the matched frame + candidates as real
+             images, download the PNG/JSON, all via `build_pipeline()` /
+             `append_session_log()` reused from `main.py`. New `uv`
+             dependency group `web`; 9 tests via Streamlit's own `AppTest`
+             harness; README + Approch.md §9.1 updated.
+
+--------------------------------------------------------------------------------
+CLEANUP — Remove terminal image rendering, trim the README
+--------------------------------------------------------------------------------
+[CLEANUP-01]
+MODEL      : Claude Code
+CONTEXT    : With the Streamlit UI (WEBUI-01) now the dedicated place to
+             view images, the CLI's ANSI terminal preview (S9) was a second,
+             redundant way to do the same thing -- and the README had grown
+             sections describing features that either no longer existed or
+             were no longer the primary way to use the tool.
+GOAL       : One place for images (the web UI), a CLI that prints plain text
+             only, and a shorter README that reflects that.
+CONSTRAINTS:
+  - `PipelineConfig`'s candidate-preview *extraction* logic must survive --
+    only the terminal *rendering* path goes away, since the web UI still
+    needs those preview frames.
+  - No dangling links/anchors left behind in either README.md or Approch.md
+    after the deleted sections.
+PROMPT     : "Remove the terminal-based image printing entirely. Update the
+             README to add image viewing as the 5th step of the Web UI
+             walkthrough, and crisp up the README further -- cut sections
+             like End-to-end verification and Terminal previews that are no
+             longer necessary."
+OUTCOME    : Deleted `utils/terminal_image.py` + its tests, removed
+             `--no-images`/`--image-width`, renamed
+             `PipelineConfig.show_images` -> `extract_candidate_previews`
+             (default off -- the CLI has no use for it anymore). README's
+             "Terminal previews" and "End-to-end verification" sections
+             removed; "Web UI" restructured into 5 numbered steps ending in
+             "View the result".
+
+--------------------------------------------------------------------------------
+DOCS — Short project description
+--------------------------------------------------------------------------------
+[DOCS-02]
+MODEL      : Claude Code
+CONTEXT    : The README opened straight into an architecture diagram with no
+             one-paragraph summary of what the project actually does.
+GOAL       : A short, scannable description a first-time reader can read in
+             five seconds before the diagram.
+PROMPT     : "Add a short description of the project to the README."
+OUTCOME    : One paragraph under the title covering the core mechanism
+             (speech-to-text + fuzzy matching), the four things a result
+             returns, and that both a CLI and a web UI exist.
+
+

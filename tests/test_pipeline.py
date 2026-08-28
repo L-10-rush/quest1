@@ -563,9 +563,10 @@ class TestScreenPresenceVerification:
 
 
 class TestCandidatePreviews:
-    """CLI-preview-only image data (see utils/terminal_image.py). These
-    never touch ResultStore/JSON -- FakeResultStore.calls[i][6] is always
-    the screen_presence arg, unaffected by anything tested here."""
+    """Preview-only image data (rendered by the optional Streamlit UI, see
+    src/webapp/app.py) -- these never touch ResultStore/JSON;
+    FakeResultStore.calls[i][6] is always the screen_presence arg,
+    unaffected by anything tested here."""
 
     def test_best_frame_image_always_set(self, tmp_path, confident_match):
         config = PipelineConfig(
@@ -586,6 +587,7 @@ class TestCandidatePreviews:
             target_text="My mind rebels at stagnation",
             work_dir=tmp_path,
             output_dir=tmp_path / "output",
+            extract_candidate_previews=True,
         )
         pipeline, fakes = _build_pipeline(tmp_path, config, multi_candidate_match)
 
@@ -605,6 +607,7 @@ class TestCandidatePreviews:
             target_text="My mind rebels at stagnation",
             work_dir=tmp_path,
             output_dir=tmp_path / "output",
+            extract_candidate_previews=True,
         )
         pipeline, fakes = _build_pipeline(tmp_path, config, confident_match)
 
@@ -614,21 +617,20 @@ class TestCandidatePreviews:
         # only the winning frame was ever located
         assert len(fakes["frame_locator"].calls) == 1
 
-    def test_no_previews_extracted_when_show_images_disabled(self, tmp_path, multi_candidate_match):
+    def test_no_previews_extracted_by_default(self, tmp_path, multi_candidate_match):
         config = PipelineConfig(
             video_url="https://ok.ru/video/248244667877",
             target_text="My mind rebels at stagnation",
             work_dir=tmp_path,
             output_dir=tmp_path / "output",
-            show_images=False,
         )
         pipeline, fakes = _build_pipeline(tmp_path, config, multi_candidate_match)
 
         summary = pipeline.run()
 
         assert summary.candidate_previews == ()
-        # show_images=False skips the extra seeks entirely -- only the
-        # winning frame is located, not a wasted-then-discarded set of previews
+        # extract_candidate_previews defaults False -- skips the extra seeks
+        # entirely, only the winning frame is located
         assert len(fakes["frame_locator"].calls) == 1
         # the winning frame's own image is still always available
         assert summary.best_frame_image is not None
@@ -639,6 +641,7 @@ class TestCandidatePreviews:
             target_text="My mind rebels at stagnation",
             work_dir=tmp_path,
             output_dir=tmp_path / "output",
+            extract_candidate_previews=True,
         )
         # the second candidate's preview seek fails; the search must still
         # succeed with the other previews intact

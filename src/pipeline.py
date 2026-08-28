@@ -48,7 +48,8 @@ class PreparedSession:
 
 @dataclass(frozen=True)
 class PipelineRunSummary:
-    """What the CLI prints -- a thin view over the full persisted result."""
+    """What a caller (the CLI, the Streamlit UI) gets back -- a thin view
+    over the full persisted result."""
 
     timestamp: str
     frame_number: int
@@ -63,9 +64,10 @@ class PipelineRunSummary:
     screen_status: str | None = None
     screen_confidence: float | None = None
     screen_reason: str | None = None
-    # CLI-preview-only data, never persisted to the result JSON (that's
-    # built separately by ResultStore from the raw stage outputs). None /
-    # empty when --no-images was passed. See utils/terminal_image.py.
+    # Preview-only image data, never persisted to the result JSON (that's
+    # built separately by ResultStore from the raw stage outputs).
+    # `candidate_previews` is empty unless the caller set
+    # `PipelineConfig.extract_candidate_previews` (see src/webapp/app.py).
     best_frame_image: np.ndarray | None = None
     candidate_previews: tuple[tuple[str, float, np.ndarray], ...] = ()  # (matched_text, score, image)
 
@@ -142,7 +144,7 @@ class DialoguePipeline:
         frame = self._frame_locator.locate(session.video, match.best.start_seconds)
 
         candidate_previews: list[tuple[str, float, np.ndarray]] = []
-        if cfg.show_images:
+        if cfg.extract_candidate_previews:
             others = [c for c in match.candidates if c is not match.best]
             for candidate in others[: self._MAX_CANDIDATE_PREVIEWS]:
                 try:

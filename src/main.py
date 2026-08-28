@@ -30,7 +30,6 @@ from src.screen_presence.opencv_detector import OpenCvScreenPresenceDetector
 from src.transcription.base import TranscriptionEngine
 from src.transcription.vosk_engine import VoskEngine
 from src.transcription.whisperx_engine import WhisperXEngine
-from src.utils.terminal_image import render_image_ansi
 
 logger = logging.getLogger(__name__)
 
@@ -58,7 +57,7 @@ def build_pipeline(config: PipelineConfig) -> DialoguePipeline:
     )
 
 
-def _summary_lines(summary: PipelineRunSummary) -> list[str]:
+def summary_lines(summary: PipelineRunSummary) -> list[str]:
     """The plain-text fields shared between the terminal summary and the
     session log -- kept in one place so the two never drift apart."""
     lines = [
@@ -80,7 +79,7 @@ def _summary_lines(summary: PipelineRunSummary) -> list[str]:
     return lines
 
 
-def _append_session_log(
+def append_session_log(
     config: PipelineConfig, video_id: str, target_text: str, summary: PipelineRunSummary
 ) -> Path | None:
     """Appends a plain-text record of one search to
@@ -97,48 +96,25 @@ def _append_session_log(
     log_path.parent.mkdir(parents=True, exist_ok=True)
 
     header = f'[{datetime.now(timezone.utc).isoformat(timespec="seconds")}] Query: "{target_text}"'
-    block = "\n".join([header, *_summary_lines(summary), ""])
+    block = "\n".join([header, *summary_lines(summary), ""])
 
     with log_path.open("a", encoding="utf-8") as f:
         f.write(block + "\n")
     return log_path
 
 
-def _print_summary(
-    summary: PipelineRunSummary,
-    *,
-    show_images: bool,
-    image_width: int,
-    log_path: Path | None = None,
-) -> None:
-    for line in _summary_lines(summary):
+def _print_summary(summary: PipelineRunSummary, *, log_path: Path | None = None) -> None:
+    for line in summary_lines(summary):
         print(line)
     if log_path is not None:
         print(f"Log       : {log_path}")
-
-    if show_images and summary.best_frame_image is not None:
-        print()
-        print(render_image_ansi(summary.best_frame_image, max_width=image_width))
-
-    if show_images and summary.candidate_previews:
-        print()
-        print(f"Other candidates ({len(summary.candidate_previews)}, for ambiguity review):")
-        for text, score, image in summary.candidate_previews:
-            print(f'  score={score:.1f}  "{text}"')
-            print(render_image_ansi(image, max_width=image_width))
-            print()
 
 
 _EXIT_WORDS = {"exit", "quit", "q"}
 
 
 def _run_interactive_session(
-    pipeline: DialoguePipeline,
-    session: PreparedSession,
-    config: PipelineConfig,
-    *,
-    show_images: bool,
-    image_width: int,
+    pipeline: DialoguePipeline, session: PreparedSession, config: PipelineConfig
 ) -> None:
     """Prompts for one dialogue line at a time and searches the already
     -prepared session for each, looping until the user exits.
@@ -168,10 +144,10 @@ def _run_interactive_session(
             logger.error("search failed: %s", exc)
             continue
 
-        log_path = _append_session_log(config, session.video.video_id, target_text, summary)
+        log_path = append_session_log(config, session.video.video_id, target_text, summary)
 
         print()
-        _print_summary(summary, show_images=show_images, image_width=image_width, log_path=log_path)
+        _print_summary(summary, log_path=log_path)
         print()
 
 
@@ -191,23 +167,14 @@ def main(argv: list[str] | None = None) -> int:
         logger.error("not yet implemented: %s", exc)
         return 2
 
-    # Rendering ANSI escape codes into a redirected/piped output (a log
-    # file, `| cat`, a non-interactive CI run) would just dump garbage --
-    # `--no-images` is a user opt-out, isatty() is the environment's own.
-    show_images = config.show_images and sys.stdout.isatty()
-
     try:
         if config.target_text:
             # Previous single-shot behavior: one search, then exit.
             summary = pipeline.locate_dialogue(session, config.target_text)
-            log_path = _append_session_log(config, session.video.video_id, config.target_text, summary)
-            _print_summary(
-                summary, show_images=show_images, image_width=config.image_width, log_path=log_path
-            )
+            log_path = append_session_log(config, session.video.video_id, config.target_text, summary)
+            _print_summary(summary, log_path=log_path)
         else:
-            _run_interactive_session(
-                pipeline, session, config, show_images=show_images, image_width=config.image_width
-            )
+            _run_interactive_session(pipeline, session, config)
     except PipelineError as exc:
         logger.error("pipeline failed: %s", exc)
         return 1

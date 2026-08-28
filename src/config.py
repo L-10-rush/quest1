@@ -47,16 +47,16 @@ class PipelineConfig:
     # screen_presence/base.py). On by default -- it's what answers the
     # literal "on-screen dialogue" reading of the problem statement.
     verify_screen_presence: bool = True
-    # Inline terminal preview of the matched frame + top candidates (see
-    # utils/terminal_image.py). main.py additionally checks isatty() before
-    # actually rendering, so this stays True by default without ever
-    # dumping raw ANSI escapes into a redirected/piped output.
-    show_images: bool = True
-    image_width: int = 60
+    # Whether to also extract preview frames for the other top-scoring
+    # candidates, not just the winning match (see pipeline.py's
+    # _MAX_CANDIDATE_PREVIEWS). Off by default -- the CLI has no way to
+    # display these, so this only matters to a caller that renders images
+    # itself, e.g. the optional Streamlit UI (src/webapp/app.py), which
+    # sets it explicitly per its own "extract candidate previews" toggle.
+    extract_candidate_previews: bool = False
     # Plain-text, human-readable record of every search against this video,
     # appended to output/<video_id>/session.log after each one -- separate
-    # from the per-search result_<frame>.json (see output/json_store.py)
-    # and from the terminal-only image previews above.
+    # from the per-search result_<frame>.json (see output/json_store.py).
     save_session_log: bool = True
 
     def __post_init__(self) -> None:
@@ -68,8 +68,6 @@ class PipelineConfig:
             raise ValueError("match_threshold must be between 0 and 100")
         if self.engine not in ("whisperx", "vosk"):
             raise ValueError(f"unknown engine: {self.engine!r}")
-        if self.image_width <= 0:
-            raise ValueError("image_width must be positive")
 
 
 def _env_default(name: str, fallback: str) -> str:
@@ -159,19 +157,6 @@ def build_arg_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
-        "--no-images",
-        action="store_false",
-        dest="show_images",
-        default=True,
-        help="Don't render frame previews inline in the terminal (see --image-width).",
-    )
-    parser.add_argument(
-        "--image-width",
-        type=int,
-        default=60,
-        help="Terminal columns wide for inline frame previews (default: 60).",
-    )
-    parser.add_argument(
         "--no-session-log",
         action="store_false",
         dest="save_session_log",
@@ -202,7 +187,5 @@ def config_from_args(argv: list[str] | None = None) -> PipelineConfig:
         keep_work_files=args.keep_work_files,
         verbose=args.verbose,
         verify_screen_presence=args.verify_screen_presence,
-        show_images=args.show_images,
-        image_width=args.image_width,
         save_session_log=args.save_session_log,
     )

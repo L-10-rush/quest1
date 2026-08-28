@@ -92,14 +92,15 @@ sample transcript.
   an interactive session that accepts one dialogue line at a time.
 - For a single search, return: timestamp, frame number, matched text, match
   score, an on-screen verdict, and a saved frame image.
-- Show the matched frame — and, when a search is ambiguous, the other
-  top-scoring candidates — as an inline color preview in the terminal, not
-  just a file path (`--no-images` to opt out).
 - Persist every result as JSON + PNG, keyed per video, without overwriting
   an earlier search against the same video.
 - Append a plain-text, human-readable record of every search (query,
   timestamp, frame, score, on-screen verdict) to a running per-video log,
   independent of the machine-shaped JSON (`--no-session-log` to opt out).
+- Offer the same URL → dialogue → frame flow through a browser UI, showing
+  the matched frame — and, when a search is ambiguous, the other
+  top-scoring candidates — as real images, without duplicating the pipeline
+  wiring (§9.1).
 - Surface every line of dialogue spoken in the video (the full transcript),
   not only the phrase that was searched for.
 - Report a clear, structured result — never crash silently — when nothing
@@ -231,20 +232,31 @@ for a video where OCR + audio cross-confirmation would actually help.
 
 ## 8. Phase-Wise Development Plan & Timeline
 
-Built stage by stage so a demonstrable result existed at every step, rather
-than integrating everything once at the end.
+Built sprint by sprint so a demonstrable, runnable result existed at every
+step, rather than integrating everything once at the end. Each sprint below
+was driven by an actual prompt to the model, not a spec written up front and
+handed off — the full prompt for each is logged in [prompt.txt](prompt.txt)
+under the matching ID (`[S1-01]`, `[S2-01]`, ...).
 
-| Phase | Deliverable | Gate before the next phase started |
-|---|---|---|
-| 1 — Ingestion | `yt-dlp` download + metadata, SQLite-backed sequenced registry cache | Run against the real assigned URL; metadata (fps, duration, codec) inspected |
-| 2 — Matching & frames | RapidFuzz sliding-window matcher, timestamp→frame mapping, OpenCV seek + extract | Full pipeline run against a synthesized speech clip; extracted frame opened and confirmed correct |
-| 3 — Robustness | Never-silent uncertainty handling, config knobs, `--language` swap, first real test suite | Uncertain-match and language-swap tests green; own tests caught a real scoring bug (§17) |
-| 4 — Packaging | Multi-stage `uv`-based Dockerfile, dependency pinning | WhisperX actually imported and ran, not just passed mocked tests — surfaced the four issues in §17 |
-| 5 — UX | Interactive multi-query CLI session (`prepare()`/`locate_dialogue()`/`cleanup()` split) | Driven manually end to end: multiple searches against one cached session, then exit |
-| 6 — On-screen verification | Stage 6, local heuristic, `--no-screen-verification` | Ran for real against a synthesized clip and a real bug-hunting smoke test (§17) |
+| Sprint | Scope | Key deliverable | Gate before the next sprint started | Ref |
+|---|---|---|---|---|
+| 1 — Ingestion | Video download + metadata | `yt-dlp` downloader, SQLite-backed sequenced registry cache so a repeat URL skips re-downloading | Run against the real assigned URL; metadata (fps, duration, codec) inspected | [S1](prompt.txt) |
+| 2 — Audio extraction | Pull audio out of the downloaded video | `ffmpeg`-based extractor producing mono 16kHz WAV, the format WhisperX/Vosk expect | Extracted WAV's header verified (mono, 16kHz, correct duration) | [S2](prompt.txt) |
+| 3 — Transcription | Speech-to-text with word-level timestamps | WhisperX engine (word-level, not segment-level) + Vosk behind the same interface as a lighter fallback; `DialogueSegment` for the full spoken transcript | WhisperX actually imported and ran end to end, not just mocked — surfaced the four dependency issues in §17 | [S3](prompt.txt) |
+| 4 — Fuzzy matching | Locate the target phrase in the transcript | RapidFuzz sliding-window matcher, tolerant of small ASR mistakes | Uncertain-match tests green; own test suite caught a real window-width scoring bug (§17) | [S4](prompt.txt) |
+| 5 — Frame location | Timestamp → exact frame | `start_time × fps` → OpenCV seek + extract, with a seek-drift fallback for codecs that don't land exactly | Full pipeline run against a synthesized speech clip; extracted frame opened and confirmed correct | [S5](prompt.txt) |
+| 6 — Output / storage | Persist a search's result | `result.json` + frame PNG per search, video-level metadata written once and reused | `--language` swap + config validation tests green; first full pipeline integration test suite | [S6](prompt.txt) |
+| 7 — Interactive CLI UX | Search one video for many lines without re-work | `prepare()` / `locate_dialogue()` / `cleanup()` split; `dialogue>` loop | Driven manually end to end: multiple searches against one cached session, then exit | [S7](prompt.txt) |
+| 8 — On-screen verification | Answer the literal "on-screen dialogue" reading | Stage 6 — OpenCV Haar cascade + mouth-motion heuristic, `--no-screen-verification` to opt out | Ran for real against a synthesized clip and a real bug-hunting smoke test (§17) | [S8](prompt.txt) |
+| 9 — CLI frame previews *(superseded)* | View a result without leaving the terminal | ANSI half-block terminal rendering of the matched + candidate frames | Verified against a real color-gradient image and a faked-tty test | [S9](prompt.txt) |
+| 10 — Session log | Human-readable history per video | `output/<video_id>/session.log`, appended after every search, `--no-session-log` to opt out | 6 new tests + a real manual smoke test combining logging and rendering | [S10](prompt.txt) |
+| 11 — Web UI | Same pipeline, a browser instead of a terminal | `src/webapp/app.py` (Streamlit), reusing `build_pipeline()`/`append_session_log()` from `main.py` (§9.1) | 9 tests via Streamlit's own `AppTest` harness, plus a real launched-server smoke check | [WEBUI](prompt.txt) |
+| 12 — Cleanup | One place for images, a shorter README | Removed sprint 9's terminal rendering now that sprint 11 covers it; trimmed now-redundant README sections | Full suite still green after the removal; no dangling doc links left behind | [CLEANUP](prompt.txt) |
+| — Packaging (cross-cutting) | Reproducible install/run | Multi-stage `uv`-based Dockerfile, CPU-only dependency pinning | Image builds and runs the CLI end to end from a clean clone | [INFRA](prompt.txt) |
 
-197 tests passing (`pytest`); see [README.md](README.md#5-run-the-tests) for
-how to run them.
+193 tests passing (`pytest`) as of sprint 12 — 9 of those are the optional
+Streamlit UI's, skipped automatically if the `web` dependency group isn't
+installed; see [README.md](README.md#5-run-the-tests) for how to run them.
 
 ---
 
@@ -260,6 +272,55 @@ how to run them.
 | 6 | On-screen verification | OpenCV Haar cascade (local heuristic) | matched window → on/off/uncertain verdict | `screen_presence/opencv_detector.py` |
 | 7 | Reporting | stdlib `json` + `cv2.imwrite` | all of the above → `result.json` + `.png` | `output/json_store.py` |
 
+Same seven stages, as a pipeline (each box is the module behind that stage's
+ABC; the right-hand column is what that stage's `base.py` interface returns):
+
+```
+          video URL
+          │
+          ▼
+        ┌────────────────────────────┐
+        │ [1] Ingestion              │  yt-dlp (+ SQLite registry cache)
+        │ VideoDownloader            │  → local video file + metadata
+        └────────────────────────────┘
+          │
+          ▼
+        ┌────────────────────────────┐
+        │ [2] Audio extraction       │  ffmpeg
+        │ AudioExtractor             │  → mono 16kHz WAV
+        └────────────────────────────┘
+          │
+          ▼
+        ┌────────────────────────────┐
+        │ [3] Transcription          │  WhisperX / Vosk
+        │ TranscriptionEngine        │  → word-level transcript
+        └────────────────────────────┘
+          │
+          ▼
+        ┌────────────────────────────┐
+        │ [4] Phrase matching        │  RapidFuzz, sliding window
+        │ PhraseMatcher              │  → best-matching span + start_time
+        └────────────────────────────┘
+          │
+          ▼
+        ┌────────────────────────────┐
+        │ [5] Frame location         │  OpenCV seek
+        │ FrameLocator               │  → exact frame image
+        └────────────────────────────┘
+          │
+          ▼
+        ┌────────────────────────────┐
+        │ [6] On-screen verification │  OpenCV Haar cascade + mouth motion
+        │ ScreenPresenceDetector     │  → on/off/uncertain verdict
+        └────────────────────────────┘
+          │
+          ▼
+        ┌────────────────────────────┐
+        │ [7] Reporting              │  stdlib json + cv2.imwrite
+        │ ResultStore                │  → result.json + frame.png
+        └────────────────────────────┘
+```
+
 ```
 src/
 ├── main.py            # composition root — only file wiring concretes → interfaces
@@ -272,7 +333,8 @@ src/
 ├── frame_locator/           # FrameLocator(ABC) → OpenCvFrameLocator
 ├── screen_presence/          # ScreenPresenceDetector(ABC) → OpenCvScreenPresenceDetector
 ├── metrics/                    # transcript word/confidence metrics
-└── output/                      # ResultStore(ABC) → JsonResultStore
+├── output/                      # ResultStore(ABC) → JsonResultStore
+└── webapp/                       # optional Streamlit UI (§9.1) — presentation only
 ```
 
 | Principle | Where |
@@ -282,6 +344,30 @@ src/
 | **L**iskov Substitution | any `TranscriptionEngine`/`PhraseMatcher`/`ScreenPresenceDetector`/... is a drop-in swap |
 | **I**nterface Segregation | each `ABC` exposes exactly one method (`download`, `extract`, `match`, `verify`, ...) |
 | **D**ependency Inversion | `DialoguePipeline.__init__` takes interfaces; only `main.py` imports concretes |
+
+### 9.1 Web UI (optional presentation layer)
+
+A Streamlit app (`src/webapp/app.py`) offers the same URL → dialogue →
+frame flow in a browser instead of a terminal — load a video once, then
+search it for as many lines as you want, with the matched frame and any
+ambiguous candidates shown as real images rather than a file path.
+
+It does **not** re-wire the pipeline: it imports `build_pipeline()` and
+`append_session_log()` from `main.py` and calls `prepare()` /
+`locate_dialogue()` on the resulting `DialoguePipeline` directly, exactly
+like the CLI's interactive session does (§10). `main.py` stays the single
+composition root that decides which concrete downloader/transcriber/
+matcher/etc. get wired together (Dependency Inversion, above) — the web UI
+is a second *caller* of that pipeline, not a second place that builds one.
+Streamlit's own session state stands in for the CLI's `while True:` prompt
+loop, holding the prepared session across searches until the user resets it.
+
+Deliberately kept optional and separate from the default install: it's
+declared in its own `uv` dependency group (`web`, see `pyproject.toml`),
+not the base dependencies or `dev`, so `uv sync` and the production Docker
+image (§16) stay exactly as lean as before for evaluators who only need
+the CLI. See [README's Web UI section](README.md#web-ui-streamlit) for how
+to run it.
 
 ---
 
@@ -477,7 +563,9 @@ frame images) are written to `output/`; no API key, account, or gated model
 access is required anywhere in the pipeline (§4, §7.2); and a multi-stage
 Dockerfile is provided so the evaluator doesn't need Python, `ffmpeg`, or
 the ML dependency stack installed locally to reproduce the environment this
-was built against.
+was built against. The optional Streamlit UI (§9.1) is an extra `uv`
+dependency group (`--group web`) on top of the same install, not a
+separate setup path.
 
 ---
 

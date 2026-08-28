@@ -68,6 +68,16 @@ class TestPipelineConfigValidation:
         with pytest.raises(AttributeError):
             config.target_text = "changed"
 
+    def test_extract_candidate_previews_defaults_off_and_is_settable(self):
+        """No CLI flag for this one -- it's set directly by callers that can
+        render images themselves, e.g. the Streamlit UI (src/webapp/app.py)."""
+        default = PipelineConfig(video_url="https://example.com/v", target_text="hi")
+        enabled = PipelineConfig(
+            video_url="https://example.com/v", target_text="hi", extract_candidate_previews=True
+        )
+        assert default.extract_candidate_previews is False
+        assert enabled.extract_candidate_previews is True
+
 
 class TestConfigFromArgs:
     def test_requires_url(self):
@@ -92,8 +102,7 @@ class TestConfigFromArgs:
         assert config.keep_work_files is False
         assert config.verbose is False
         assert config.verify_screen_presence is True
-        assert config.show_images is True
-        assert config.image_width == 60
+        assert config.extract_candidate_previews is False
         assert config.save_session_log is True
 
     def test_language_flag_is_demonstrably_swappable(self):
@@ -138,18 +147,6 @@ class TestConfigFromArgs:
         assert (
             config_from_args([*MIN_ARGS, "--no-screen-verification"]).verify_screen_presence is False
         )
-
-    def test_images_on_by_default_and_disableable(self):
-        assert config_from_args(MIN_ARGS).show_images is True
-        assert config_from_args([*MIN_ARGS, "--no-images"]).show_images is False
-
-    def test_image_width_flag_parsed_as_int(self):
-        config = config_from_args([*MIN_ARGS, "--image-width", "40"])
-        assert config.image_width == 40
-
-    def test_non_positive_image_width_raises_value_error(self):
-        with pytest.raises(ValueError, match="image_width"):
-            config_from_args([*MIN_ARGS, "--image-width", "0"])
 
     def test_session_log_on_by_default_and_disableable(self):
         assert config_from_args(MIN_ARGS).save_session_log is True
