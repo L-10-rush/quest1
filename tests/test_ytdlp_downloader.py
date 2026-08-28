@@ -103,6 +103,64 @@ class TestDownload:
         with pytest.raises(DownloadError, match="network unreachable"):
             downloader.download(URL, dest_dir=tmp_path)
 
+    @pytest.mark.parametrize(
+        "raw_message",
+        [
+            "Failed to resolve 'totallyfakehost123.invalid' ([Errno -2] Name or service not known)",
+            "<urlopen error [Errno 111] Connection refused>",
+            "HTTPSConnectionPool: Read timed out.",
+        ],
+    )
+    def test_unreachable_host_gets_a_clear_hint(self, tmp_path, monkeypatch, registry, raw_message):
+        def failing_run_ytdlp(self, url, dest_dir, filename_stem):
+            raise RuntimeError(raw_message)
+
+        downloader = YtDlpDownloader(registry=registry)
+        monkeypatch.setattr(YtDlpDownloader, "_run_ytdlp", failing_run_ytdlp)
+
+        with pytest.raises(DownloadError, match="could not be reached") as exc_info:
+            downloader.download(URL, dest_dir=tmp_path)
+        # the original yt-dlp/urllib message is never hidden, only prefixed
+        assert raw_message in str(exc_info.value)
+
+    @pytest.mark.parametrize(
+        "raw_message",
+        [
+            "HTTP Error 404: Not Found",
+            "ERROR: [youtube] abc123: Video unavailable. This video has been removed",
+            "ERROR: Unsupported URL: https://example.com/nonsense",
+            # yt-dlp's actual real-world phrasing for a bogus video ID --
+            # note: no literal "video unavailable" substring, just "is
+            # unavailable" -- caught this via a real (unmocked) run.
+            "ERROR: [youtube] 00000000000: This video is unavailable",
+        ],
+    )
+    def test_video_not_found_gets_a_clear_hint(self, tmp_path, monkeypatch, registry, raw_message):
+        def failing_run_ytdlp(self, url, dest_dir, filename_stem):
+            raise RuntimeError(raw_message)
+
+        downloader = YtDlpDownloader(registry=registry)
+        monkeypatch.setattr(YtDlpDownloader, "_run_ytdlp", failing_run_ytdlp)
+
+        with pytest.raises(DownloadError, match="no video could be found") as exc_info:
+            downloader.download(URL, dest_dir=tmp_path)
+        assert raw_message in str(exc_info.value)
+
+    def test_unrecognized_failure_falls_back_to_generic_message(
+        self, tmp_path, monkeypatch, registry
+    ):
+        def failing_run_ytdlp(self, url, dest_dir, filename_stem):
+            raise RuntimeError("some totally unrelated internal error")
+
+        downloader = YtDlpDownloader(registry=registry)
+        monkeypatch.setattr(YtDlpDownloader, "_run_ytdlp", failing_run_ytdlp)
+
+        with pytest.raises(DownloadError, match="failed to download") as exc_info:
+            downloader.download(URL, dest_dir=tmp_path)
+        message = str(exc_info.value)
+        assert "could not be reached" not in message
+        assert "no video could be found" not in message
+
     def test_probe_failure_is_wrapped_in_download_error(self, tmp_path, monkeypatch, registry):
         downloader = YtDlpDownloader(registry=registry)
         _stub_run_ytdlp(monkeypatch, downloader, tmp_path, [])

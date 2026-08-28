@@ -12,6 +12,7 @@ import argparse
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
+from urllib.parse import urlparse
 
 DEFAULT_LANGUAGE = "en"
 DEFAULT_MATCH_THRESHOLD = 80.0
@@ -60,8 +61,21 @@ class PipelineConfig:
     save_session_log: bool = True
 
     def __post_init__(self) -> None:
-        if not self.video_url.strip():
+        stripped_url = self.video_url.strip()
+        if not stripped_url:
             raise ValueError("video_url must not be empty")
+        # Cheap, no-network sanity check -- catches a typo'd/garbage URL
+        # (missing scheme, no host, wrong protocol) immediately at
+        # construction time rather than after a slow, wrapped failure deep
+        # inside YtDlpDownloader. A URL that parses fine here can still
+        # fail at download time (host unreachable, video not found) --
+        # that's handled separately in YtDlpDownloader.download().
+        parsed = urlparse(stripped_url)
+        if parsed.scheme not in ("http", "https") or not parsed.netloc:
+            raise ValueError(
+                "video_url must be a valid http(s) URL (e.g. "
+                f"https://example.com/video), got: {self.video_url!r}"
+            )
         if self.target_text is not None and not self.target_text.strip():
             raise ValueError("target_text must not be empty")
         if not 0 <= self.match_threshold <= 100:

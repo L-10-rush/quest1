@@ -199,6 +199,25 @@ class TestMainExitCodes:
 
         assert not called
 
+    def test_malformed_url_returns_1_without_a_raw_traceback(self, monkeypatch, capsys):
+        """A bad --url is rejected by PipelineConfig itself (ValueError,
+        not SystemExit) -- main() must catch that too, not just
+        PipelineError, so it never reaches build_pipeline and never lets
+        the traceback escape to the user."""
+        called = False
+
+        def fail_if_called(config):
+            nonlocal called
+            called = True
+
+        monkeypatch.setattr(main_module, "build_pipeline", fail_if_called)
+
+        exit_code = main_module.main(["--url", "not-a-url", "--text", "hello"])
+
+        assert exit_code == 1
+        assert not called
+        assert "valid http" in capsys.readouterr().err
+
 
 class TestMainInteractiveSession:
     """`--url` given without `--text`: preprocess once, then loop over

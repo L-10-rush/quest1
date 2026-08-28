@@ -36,6 +36,33 @@ class TestPipelineConfigValidation:
         with pytest.raises(ValueError, match="video_url"):
             PipelineConfig(video_url="   ", target_text="hello")
 
+    @pytest.mark.parametrize(
+        "bad_url",
+        [
+            "not a url",
+            "example.com/video",  # no scheme
+            "www.example.com",  # no scheme
+            "ftp://example.com/video",  # wrong scheme
+            "https://",  # scheme but no host
+            "http:///video",  # scheme but no host
+        ],
+    )
+    def test_malformed_video_url_raises(self, bad_url):
+        with pytest.raises(ValueError, match="valid http"):
+            PipelineConfig(video_url=bad_url, target_text="hello")
+
+    @pytest.mark.parametrize(
+        "good_url",
+        [
+            "https://ok.ru/video/248244667877",
+            "http://example.com/video",  # http, not just https, is accepted
+            "https://www.youtube.com/watch?v=abc123",
+        ],
+    )
+    def test_well_formed_video_url_is_accepted(self, good_url):
+        config = PipelineConfig(video_url=good_url, target_text="hello")
+        assert config.video_url == good_url
+
     def test_empty_target_text_raises(self):
         with pytest.raises(ValueError, match="target_text"):
             PipelineConfig(video_url="https://example.com/v", target_text="")
@@ -89,6 +116,13 @@ class TestConfigFromArgs:
         interactive session instead of failing argument parsing."""
         config = config_from_args(["--url", "https://example.com/v"])
         assert config.target_text is None
+
+    def test_malformed_url_flag_raises_value_error(self):
+        # Parses fine as a string (argparse), but fails PipelineConfig's
+        # own URL-format validation -- proves the two layers compose
+        # correctly, same as the match-threshold case below.
+        with pytest.raises(ValueError, match="valid http"):
+            config_from_args(["--url", "not-a-url", "--text", "hello"])
 
     def test_defaults_applied(self):
         config = config_from_args(MIN_ARGS)

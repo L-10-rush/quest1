@@ -25,6 +25,52 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_REGISTRY_PATH = Path("output/registry.db")
 
+# yt-dlp raises many distinct exception types for a failed download
+# (network, extractor, unsupported URL, ...), all eventually normalized to
+# `DownloadError` below (see the contract in ingestion/base.py) -- but a
+# bare "failed to download" doesn't tell a user whether the URL was simply
+# wrong, unreachable, or pointed at a video that doesn't exist. There's no
+# single reliable exception *type* for that distinction (yt-dlp wraps
+# almost everything in `yt_dlp.utils.DownloadError` regardless of cause),
+# so the underlying error message is pattern-matched instead -- these
+# phrases are the ones yt-dlp/urllib/socket actually use for each case.
+_UNREACHABLE_HINTS = (
+    "unreachable",
+    "name or service not known",
+    "nodename nor servname",
+    "getaddrinfo failed",
+    "temporary failure in name resolution",
+    "connection refused",
+    "connection reset",
+    "timed out",
+    "no route to host",
+    "failed to establish a new connection",
+)
+_NOT_FOUND_HINTS = (
+    "404",
+    "unavailable",
+    "unsupported url",
+    "no video formats found",
+    "unable to extract",
+    "private video",
+    "has been removed",
+    "does not exist",
+    "content isn't available",
+    "video not found",
+)
+
+
+def _classify_failure(exc: Exception) -> str | None:
+    """Returns a friendlier lead-in for a known failure shape, or None to
+    fall back to the generic message -- the original exception text is
+    always appended by the caller either way, so nothing is ever hidden."""
+    text = str(exc).lower()
+    if any(hint in text for hint in _UNREACHABLE_HINTS):
+        return "the URL's host could not be reached -- check the URL and your network connection"
+    if any(hint in text for hint in _NOT_FOUND_HINTS):
+        return "no video could be found at this URL -- it may be wrong, private, removed, or unsupported"
+    return None
+
 
 class YtDlpDownloader(VideoDownloader):
     """Downloads video via `yt-dlp` and probes the result with OpenCV.
@@ -85,12 +131,14 @@ class YtDlpDownloader(VideoDownloader):
             file_path, title = self._run_ytdlp(url, dest_dir, filename_stem)
             fps, duration, width, height = self._probe(file_path)
         except Exception as exc:
-            # yt-dlp raises many distinct exception types depending on the
-            # failure (network, extractor, unsupported URL, ...) and OpenCV
-            # raises its own on a corrupt/empty output file -- deliberately
-            # broad here so every one of them is normalized to DownloadError
-            # (see the contract in ingestion/base.py: callers only ever
-            # need to handle one exception type).
+            # OpenCV raises its own errors on a corrupt/empty output file --
+            # deliberately broad here so every failure (yt-dlp's or
+            # OpenCV's) is normalized to one DownloadError (see the
+            # contract in ingestion/base.py: callers only ever need to
+            # handle one exception type).
+            hint = _classify_failure(exc)
+            if hint:
+                raise DownloadError(f"{hint}: {url} ({exc})") from exc
             raise DownloadError(f"failed to download {url}: {exc}") from exc
 
         metadata = VideoMetadata(

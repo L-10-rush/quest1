@@ -152,7 +152,15 @@ def _run_interactive_session(
 
 
 def main(argv: list[str] | None = None) -> int:
-    config = config_from_args(argv)
+    try:
+        config = config_from_args(argv)
+    except ValueError as exc:
+        # Bad input caught at construction time (e.g. a malformed --url,
+        # see PipelineConfig.__post_init__) -- never a raw traceback, same
+        # contract as every PipelineError handled below.
+        configure_logging(verbose=False)
+        logger.error("invalid configuration: %s", exc)
+        return 1
     configure_logging(config.verbose)
 
     try:

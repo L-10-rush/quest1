@@ -159,26 +159,30 @@ with st.sidebar:
         submitted = st.form_submit_button("Load video", disabled=prepared, width="stretch")
 
     if submitted and video_url.strip():
-        config = PipelineConfig(
-            video_url=video_url.strip(),
-            target_text=None,
-            language=language,
-            engine=engine,
-            whisper_model=whisper_model,
-            device=device,
-            match_threshold=match_threshold,
-            verify_screen_presence=verify_screen_presence,
-            extract_candidate_previews=show_candidates,
-            save_session_log=save_session_log,
-            keep_work_files=keep_work_files,
-        )
         try:
+            config = PipelineConfig(
+                video_url=video_url.strip(),
+                target_text=None,
+                language=language,
+                engine=engine,
+                whisper_model=whisper_model,
+                device=device,
+                match_threshold=match_threshold,
+                verify_screen_presence=verify_screen_presence,
+                extract_candidate_previews=show_candidates,
+                save_session_log=save_session_log,
+                keep_work_files=keep_work_files,
+            )
             with st.spinner(
                 "Downloading and transcribing -- this can take a few minutes on first run "
                 "(model download, then ASR)..."
             ):
                 pipeline = build_pipeline(config)
                 session = pipeline.prepare()
+        except ValueError as exc:
+            # A malformed URL (or other bad input) caught at construction
+            # time -- see PipelineConfig.__post_init__.
+            st.error(f"Invalid input: {exc}")
         except PipelineError as exc:
             st.error(f"Could not prepare this video: {exc}")
         else:

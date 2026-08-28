@@ -156,6 +156,29 @@ class TestLoadVideo:
         assert any("network unreachable" in e.value for e in at.error)
         assert not any(t.label == "Dialogue line" for t in at.text_input)
 
+    def test_malformed_url_shows_an_error_not_a_crash(self, monkeypatch):
+        """PipelineConfig's own URL-format validation (ValueError) must be
+        caught same as a PipelineError -- a bad URL typed into the sidebar
+        should render `st.error`, never an unhandled-exception page."""
+        called = False
+
+        def fail_if_called(config):
+            nonlocal called
+            called = True
+
+        monkeypatch.setattr(main_module, "build_pipeline", fail_if_called)
+
+        at = AppTest.from_file(APP_PATH)
+        at.run()
+        at.text_input[0].input("not-a-url")
+        at.button[0].click()
+        at.run()
+
+        assert not at.exception
+        assert not called
+        assert any("valid http" in e.value for e in at.error)
+        assert not any(t.label == "Dialogue line" for t in at.text_input)
+
 
 class TestSearch:
     def test_search_renders_the_matched_frame_and_metrics(self, monkeypatch, tmp_path):
